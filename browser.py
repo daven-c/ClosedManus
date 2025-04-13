@@ -1,7 +1,8 @@
 import logging
-import asyncio  # Import asyncio
-from typing import Dict, Any, List  # Added List
-from playwright.async_api import async_playwright, Page  # Added Page
+import asyncio
+from typing import Dict, Any, List
+from playwright.async_api import async_playwright, Page
+from bs4 import BeautifulSoup  # Import BeautifulSoup
 
 logger = logging.getLogger("web_automation")
 
@@ -118,14 +119,13 @@ class Browser:
             return {"success": False, "message": f"Error getting content: {e}"}
 
     async def get_page_details(self) -> Dict[str, Any]:
-        """Get current page details including URL, title, and full HTML content."""
+        """Get current page details including URL, title, and condensed HTML content with interactables."""
         if not self.page or self.page.is_closed():
             return {"success": False, "message": "Browser not initialized or page closed"}
 
         try:
             # Add a short wait for network idle to potentially catch more dynamic content
             try:
-                # Wait max 1.5s
                 await self.page.wait_for_load_state('networkidle', timeout=1500)
                 logger.debug("Waited for networkidle state.")
             except Exception as wait_error:
@@ -135,50 +135,81 @@ class Browser:
 
             url = self.page.url
             title = await self.page.title()
+            raw_html_content = await self.page.content()
+            original_length = len(raw_html_content)
+            logger.debug(f"Raw HTML Length: {original_length}")
 
-            # Get full HTML content
-            html_content = await self.page.content()
-            original_length = len(html_content)
+            # --- HTML Condensation using BeautifulSoup ---
+            soup = BeautifulSoup(raw_html_content, 'lxml')
 
-            # Limit HTML size slightly to avoid excessively large prompts, but keep most context
-            MAX_HTML_LENGTH = 30000  # Keep this limit relatively high here
-            truncated_length = original_length
-            if original_length > MAX_HTML_LENGTH:
-                logger.warning(
-                    f"HTML content length ({original_length}) exceeds browser limit ({MAX_HTML_LENGTH}), truncating.")
-                html_content = html_content[:MAX_HTML_LENGTH] + \
-                    "\n... (truncated in browser.py)"
-                truncated_length = len(html_content)
+            # Remove script, style, and other non-visible tags
+            for element in soup(["script", "style", "head", "meta", "link", "noscript"]):
+                element.decompose()
 
-            # Log original and truncated lengths
-            logger.debug(
-                f"HTML Length: Original={original_length}, Returned={truncated_length}")
+            condensed_elements = []
+            element_counter = 0
 
-            # Keep interactable extraction for potential future use or different LLM strategies,
-            # but we won't pass it directly in the main action prompt anymore.
-            interactables = []
-            try:
-                # Find buttons
-                buttons = await self.page.locator('button:visible, input[type="button"]:visible, input[type="submit"]:visible, [role="button"]:visible').all()
-                for i, btn in enumerate(buttons):
-                    text = await btn.text_content() or await btn.get_attribute('aria-label') or await btn.get_attribute('value')
-                    selector = f'button:visible, input[type="button"]:visible, input[type="submit"]:visible, [role="button"]:visible >> nth={i}'
-                    interactables.append({
-                        "type": "button",
-                        "text": text.strip() if text else "[no text]",
-                        "selector": selector
+            # Extract key text content and interactable elements
+            for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'td', 'th', 'label', 'button', 'a', 'input', 'select', 'textarea']):
+                element_id = f"elem_{element_counter}"
+                element_counter += 1
+                tag_name = element.name
+                text = element.get_text(separator=' ', strip=True)
+                attributes = {
+                    'id': element.get('id'),
+                    'name': element.get('name'),
+                    'class': element.get('class'),
+                    'aria-label': element.get('aria-label'),
+                    'placeholder': element.get('placeholder'),
+                    'role': element.get('role'),
+                    'type': element.get('type') if tag_name == 'input' else None,
+                    'href': element.get('href') if tag_name == 'a' else None,
+                    # Get current value for inputs
+                    'value': element.get('value')
+                }
+                # Filter out None attributes
+                attributes = {k: v for k, v in attributes.items()
+                              if v is not None}
+
+                # Only include elements with some text or key attributes, or if interactable
+                is_interactable = tag_name in [
+                    'button', 'a', 'input', 'select', 'textarea']
+                has_relevant_attributes = any(attributes.values())
+
+                if text or is_interactable or has_relevant_attributes:
+                    condensed_elements.append({
+                        "aid": element_id,  # Assign an ID for potential reference
+                        "tag": tag_name,
+                        "text": text,
+                        "attributes": attributes
                     })
-                # ... (similar extraction for links and inputs - can be kept or removed if not used)
-            except Exception as ie:
+
+            # Create the condensed representation string (JSON-like)
+            # Limit the number of elements to prevent excessive length even after condensation
+            MAX_CONDENSED_ELEMENTS = 500
+            if len(condensed_elements) > MAX_CONDENSED_ELEMENTS:
                 logger.warning(
-                    f"Could not extract all interactable elements: {ie}")
+                    f"Condensed elements ({len(condensed_elements)}) exceed limit ({MAX_CONDENSED_ELEMENTS}), truncating.")
+                condensed_elements = condensed_elements[:MAX_CONDENSED_ELEMENTS]
+                condensed_elements.append(
+                    {"aid": "truncated", "tag": "info", "text": "... (condensed elements truncated)", "attributes": {}})
+
+            # Use json.dumps for proper formatting, easier for LLM to parse
+            import json
+            condensed_content_str = json.dumps(condensed_elements, indent=2)
+            condensed_length = len(condensed_content_str)
+
+            logger.debug(f"Condensed Content Length: {condensed_length}")
+            # --- End HTML Condensation ---
 
             return {
                 "success": True,
                 "url": url,
                 "title": title,
-                "html_content": html_content,  # Use full HTML content
-                # "interactable_elements": interactables # Keep data but don't use in main prompt
+                # Return the condensed representation instead of raw HTML
+                "condensed_content": condensed_content_str,
+                "original_html_length": original_length,  # Keep for info
+                "condensed_content_length": condensed_length  # Keep for info
             }
         except Exception as e:
             logger.error(f"Error getting page details: {e}", exc_info=True)
