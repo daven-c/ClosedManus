@@ -62,6 +62,30 @@ class Agent:
             logger.error(f"Failed to initialize LLM: {e}")
             self.gemini_model = None
 
+    async def fetch_page_content(self) -> Dict[str, Any]:
+        """Fetches the current page's HTML content and other details."""
+        logger.info("Fetching current page content...")
+        if not self.browser.page or self.browser.page.is_closed():
+            logger.warning("Browser page not available to fetch content.")
+            return {"success": False, "message": "Browser page not available."}
+
+        page_details = await self.browser.get_page_details()
+
+        if page_details.get("success"):
+            logger.info("Successfully fetched page content.")
+            # Return relevant details, including HTML
+            return {
+                "success": True,
+                "url": page_details.get("url"),
+                "title": page_details.get("title"),
+                "html_content": page_details.get("html_content"),
+                "message": "Page content fetched successfully."
+            }
+        else:
+            logger.error(
+                f"Failed to fetch page content: {page_details.get('message')}")
+            return {"success": False, "message": f"Failed to fetch page content: {page_details.get('message')}"}
+
     async def start_execution(self, goal: str, websocket) -> bool:
         """Starts the execution loop for the given goal."""
         if self.is_running:
@@ -124,7 +148,7 @@ class Agent:
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
             prompt = f"""
-            You are a web automation expert. Your task is to analyze the current page state and determine the exact action needed for the current step. Prioritize asking the user if any information is unclear or missing.
+            You are a web automation expert. Your task is to analyze the current page state and determine the exact action needed for the current step. Prioritize asking the user if any information is unclear or missing. Explore relevant links if needed.
 
             OVERALL GOAL: {self.goal}
 
@@ -150,8 +174,9 @@ class Agent:
             2. If the step requires *any* information not immediately clear from the page or history (e.g., login credentials, specific choices, confirmation of intent), set action_type to "ask_user" and provide a clear, specific question in the "value" field. Err on the side of asking if unsure.
             3. **If the step involves searching (e.g., "Search for X", "Enter X into search bar"), determine if the query needs to be typed *or* if the search needs to be submitted.**
                 - If the query needs typing, use the "type" action.
-                - **If the query has just been typed (check conversation history/previous steps) and the current step is to perform the search or click the search button, use the "click" action on the appropriate search button (e.g., 'Google Search', 'Search').** Look for buttons near the search input in AVAILABLE ELEMENTS.
-            4. Otherwise, determine the next browser action (navigate, click, type, wait, javascript, complete).
+                - If the query has just been typed (check conversation history/previous steps) and the current step is to perform the search or click the search button, use the "click" action on the appropriate search button (e.g., 'Google Search', 'Search'). Look for buttons near the search input in AVAILABLE ELEMENTS.
+            4. **If the step involves finding information or exploring a topic, examine AVAILABLE ELEMENTS and the HTML for relevant links (`<a>` tags). If a link seems promising for gathering more details related to the step or goal, suggest a "click" action on that link.**
+            5. Otherwise, determine the next browser action (navigate, click, type, wait, javascript, complete).
 
             Return a JSON object with the following structure:
             {{
@@ -162,7 +187,7 @@ class Agent:
                 "value": "text to type, URL, wait duration, JS code, or the question to ask the user",
                 "javascript_code": "optional JavaScript code to execute (use instead of selector/strategy if needed)",
                 "explanation": "explanation of why this action/question was chosen",
-                "thought": "your reasoning process, including checking if search needs typing vs submitting"
+                "thought": "your reasoning process, including checking if search needs typing vs submitting, and considering link exploration"
             }}
             """
 
@@ -645,7 +670,7 @@ class Agent:
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
             prompt = f"""
-            You are a web automation planner determining the *single next step*. Prioritize asking for user input if clarification is needed. Break down complex tasks like searching into multiple steps.
+            You are a web automation planner determining the *single next step*. Prioritize asking for user input if clarification is needed. Break down complex tasks like searching into multiple steps. Consider exploring links for more information.
 
             OVERALL GOAL: {self.goal}
 
@@ -668,7 +693,8 @@ class Agent:
             - If the next logical action requires *any* clarification or input from the user (e.g., missing credentials, ambiguous choices, confirmation of the next action), the next step should be to ask the user (e.g., "Ask user for login credentials", "Ask user to confirm proceeding with checkout").
             - **If the task involves searching:**
                 - If the search query hasn't been typed yet, the next step is "Type '[search query]' into the search bar".
-                - **If the search query *was* typed in the previous step (check COMPLETED STEPS HISTORY), the next step is "Click the search button" or "Submit the search".**
+                - If the search query *was* typed in the previous step (check COMPLETED STEPS HISTORY), the next step is "Click the search button" or "Submit the search".
+            - **If the current page contains information relevant to the goal but more detail might be needed, consider suggesting clicking a relevant link.** For example, if on a search results page, suggest "Click the first relevant search result link". If on a product overview page, suggest "Click the 'Details' or 'Specifications' link".
             - Otherwise, describe the high-level browser action (e.g., "Click the 'Login' button", "Fill in the search bar").
             - Consider the history to avoid repetition and ensure progress.
 
@@ -676,8 +702,8 @@ class Agent:
             Return ONLY a JSON object containing the next step description and your reasoning.
             ```json
             {{
-                "next_step": "Description of the single next step (e.g., 'Type '10 richest people' into search bar', 'Click the Google Search button', 'Ask user for the specific product code').",
-                "thought": "Your reasoning for choosing this step, considering if a search query was just typed."
+                "next_step": "Description of the single next step (e.g., 'Type '10 richest people' into search bar', 'Click the Google Search button', 'Click the first search result link', 'Ask user for the specific product code').",
+                "thought": "Your reasoning for choosing this step, considering if a search query was just typed or if exploring a link is appropriate."
             }}
             """
             response = await asyncio.to_thread(
