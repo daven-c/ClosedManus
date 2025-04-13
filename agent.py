@@ -148,12 +148,15 @@ class Agent:
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
             prompt = f"""
-            You are a web automation expert. Your task is to analyze the current page state and determine the exact action needed for the current step. Prioritize asking the user if any information is unclear or missing. Explore relevant links if needed.
+            You are a meticulous web automation expert. Your task is to analyze the current page state and determine the *precise* action needed for the current step, ensuring progress towards the overall goal. Prioritize asking the user if information is unclear. Be thorough.
 
             OVERALL GOAL: {self.goal}
 
             CONVERSATION HISTORY:
             {formatted_history}
+
+            COMPLETED STEPS HISTORY:
+            {json.dumps(self.completed_steps, indent=2)}
 
             STEP TO EXECUTE: {step}
 
@@ -164,30 +167,32 @@ class Agent:
             AVAILABLE ELEMENTS ON PAGE:
             {json.dumps(available_elements, indent=2)}
 
-            HTML CONTENT:
+            HTML CONTENT (up to 18000 chars):
             ```html
-            {html_content[:18000]}
+            {html_content[:30000]}
             ```
 
-            IMPORTANT:
-            1. Check AVAILABLE ELEMENTS before suggesting actions. Use these elements whenever possible.
-            2. If the step requires *any* information not immediately clear from the page or history (e.g., login credentials, specific choices, confirmation of intent), set action_type to "ask_user" and provide a clear, specific question in the "value" field. Err on the side of asking if unsure.
-            3. **If the step involves searching (e.g., "Search for X", "Enter X into search bar"), determine if the query needs to be typed *or* if the search needs to be submitted.**
-                - If the query needs typing, use the "type" action.
-                - If the query has just been typed (check conversation history/previous steps) and the current step is to perform the search or click the search button, use the "click" action on the appropriate search button (e.g., 'Google Search', 'Search'). Look for buttons near the search input in AVAILABLE ELEMENTS.
-            4. **If the step involves finding information or exploring a topic, examine AVAILABLE ELEMENTS and the HTML for relevant links (`<a>` tags). If a link seems promising for gathering more details related to the step or goal, suggest a "click" action on that link.**
-            5. Otherwise, determine the next browser action (navigate, click, type, wait, javascript, complete).
+            IMPORTANT - THOROUGH EXECUTION:
+            1.  **Verify Current State vs. Step:** Does the CURRENT PAGE STATE match the prerequisite for the STEP TO EXECUTE? (e.g., If the step is 'Click search results link', are you actually on a search results page? If not, determine the action needed to *get* to that state first, like performing the search).
+            2.  **Use Available Elements:** Check AVAILABLE ELEMENTS before suggesting actions. Use these elements whenever possible. Prefer specific locators (like IDs or unique attributes) if available.
+            3.  **Ask if Unsure:** If the step requires *any* information not immediately clear from the page or history (credentials, choices, confirmation), set `action_type` to "ask_user". Err on the side of asking.
+            4.  **Search Logic:**
+                *   If the step is to search, and the query hasn't been typed, use "type".
+                *   If the query *was* typed (check history), and the step is to submit, use "click" on the search button or simulate Enter if appropriate.
+            5.  **Link Exploration:** If the step involves finding information, examine AVAILABLE ELEMENTS and HTML for relevant links (`<a>` tags). If a link seems promising, suggest a "click" action.
+            6.  **Information Extraction:** If the step is to "Extract information X", use the "complete" action type and put the extracted information in the "value" field. If the information isn't present, determine the next action (e.g., click a link, ask user) or report failure if truly stuck.
+            7.  **Completion:** Only use `action_type: "complete"` if the *specific* `STEP TO EXECUTE` is fully achieved by the current state (e.g., information is found and ready to be returned) OR if the step explicitly involves extracting information found on the current page. Do not use "complete" just because an action was performed; the loop handles step progression.
 
-            Return a JSON object with the following structure:
+            Return ONLY a JSON object:
             {{
                 "action_type": "navigate|click|type|wait|javascript|complete|ask_user",
-                "selector": "CSS selector or Playwright locator (null if ask_user or javascript)",
-                "locator_strategy": "css|xpath|text|role|get_by_role|get_by_label (null if ask_user or javascript)",
+                "selector": "CSS selector or Playwright locator (null if ask_user, javascript, navigate, wait, complete)",
+                "locator_strategy": "css|xpath|text|role|get_by_role|get_by_label (null if ask_user, javascript, navigate, wait, complete)",
                 "locator_args": {{}}, # e.g., {{"role": "button", "name": "Google Search"}} for get_by_role
-                "value": "text to type, URL, wait duration, JS code, or the question to ask the user",
-                "javascript_code": "optional JavaScript code to execute (use instead of selector/strategy if needed)",
-                "explanation": "explanation of why this action/question was chosen",
-                "thought": "your reasoning process, including checking if search needs typing vs submitting, and considering link exploration"
+                "value": "text to type, URL, wait duration, JS code, question to ask user, or *extracted information if action_type is complete*",
+                "javascript_code": "optional JavaScript code to execute",
+                "explanation": "Detailed explanation of why this action/question was chosen, referencing the current state and step.",
+                "thought": "Your reasoning process: Verify state, check history, consider alternatives, select best action for the *specific* step."
             }}
             """
 
@@ -260,42 +265,48 @@ class Agent:
             url = final_page_details.get("url", "unknown")
             title = final_page_details.get("title", "unknown")
 
-            MAX_ANSWER_HTML_LENGTH = 15000
+            MAX_ANSWER_HTML_LENGTH = 25000  # Increased slightly
             prompt_html_content = html_content[:MAX_ANSWER_HTML_LENGTH] if len(
                 html_content) > MAX_ANSWER_HTML_LENGTH else html_content
 
             formatted_history = "\n".join(
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
+            completed_steps_str = "\n".join(
+                f"- {s}" for s in self.completed_steps)
 
             prompt = f"""
-            You are a web data extraction assistant. Based on the original goal, conversation history, and the final state of the web page, extract the specific answer requested.
+            You are a web data extraction assistant. Based on the original goal, the *entire* conversation history, all completed steps, and the final state of the web page, extract the specific answer requested or summarize the outcome.
 
             ORIGINAL GOAL: {goal}
 
-            CONVERSATION HISTORY:
+            FULL CONVERSATION HISTORY:
             {formatted_history}
+
+            COMPLETED STEPS HISTORY:
+            {completed_steps_str}
 
             FINAL PAGE STATE:
             URL: {url}
             TITLE: {title}
-            HTML CONTENT EXCERPT:
+            HTML CONTENT EXCERPT (up to {MAX_ANSWER_HTML_LENGTH} chars):
             ```html
             {prompt_html_content}
             ```
 
             INSTRUCTIONS:
-            1. Carefully read the ORIGINAL GOAL and CONVERSATION HISTORY to understand what information needs to be extracted.
-            2. Analyze the HTML CONTENT EXCERPT and the page URL/TITLE to find the information relevant to the goal/conversation.
-            3. Extract the specific piece of information requested.
-            4. If the information cannot be found, state that clearly in the 'answer' field and set 'success' to false.
-            5. Provide your reasoning in the 'thought' field.
+            1.  Carefully review the ORIGINAL GOAL, FULL CONVERSATION HISTORY, and COMPLETED STEPS HISTORY to understand the *complete context* and what information or final state was expected.
+            2.  Analyze the FINAL PAGE STATE (HTML, URL, Title) to find the information or confirm the state relevant to the goal.
+            3.  Extract the specific piece of information requested by the goal, if applicable and present on the page.
+            4.  If the goal was an action (e.g., "book a flight", "submit form"), confirm if the final page state indicates successful completion.
+            5.  If the information cannot be found or the goal state wasn't reached, state that clearly in the 'answer' field and set 'success' to false. Explain *why* based on the final page content and history.
+            6.  Provide detailed reasoning in the 'thought' field, referencing the goal, history, and final page content.
 
-            Return ONLY a JSON object with the following structure:
+            Return ONLY a JSON object:
             ```json
             {{
               "success": true|false,
-              "answer": "The extracted answer string, or null/a descriptive message if not found",
-              "thought": "Your reasoning for finding (or not finding) the answer on the page."
+              "answer": "The extracted answer string, a confirmation of goal completion, or a descriptive message if not found/completed",
+              "thought": "Your detailed reasoning for finding (or not finding) the answer/confirming completion based on all available context and the final page."
             }}
             """
             response = await asyncio.to_thread(
@@ -361,10 +372,11 @@ class Agent:
                     return
                 final_page_details = current_page_details
 
-                goal_met = await self.check_goal_completion(current_page_details)
-                if goal_met:
-                    logger.info("Goal completion check returned true.")
-                    await self._send_message("status_update", {"message": "Goal condition met. Extracting final answer..."})
+                goal_met_result = await self.check_goal_completion(current_page_details)
+                if goal_met_result.get("goal_achieved", False):
+                    logger.info(
+                        f"Goal completion check returned true. Reason: {goal_met_result.get('reason')}")
+                    await self._send_message("status_update", {"message": f"Goal condition met: {goal_met_result.get('reason', '')}. Extracting final answer..."})
                     break
 
                 next_step = await self.plan_next_step(current_page_details)
@@ -397,17 +409,20 @@ class Agent:
                     continue
 
                 if action_type == "complete":
+                    completion_message = f"Completed: {next_step}"
+                    extracted_value = action.get("value")
+                    if extracted_value:
+                        completion_message += f" (Extracted: {extracted_value})"
                     logger.info(
-                        f"LLM analysis indicated completion after step '{next_step}'.")
-                    self.completed_steps.append(
-                        f"{next_step} (Marked as complete by LLM)")
+                        f"LLM analysis indicated step completion: {completion_message}")
+                    self.completed_steps.append(next_step)
                     await self._send_message("step_completed", {
                         "step_index": step_counter,
-                        "message": f"Completed: {next_step} (LLM determined completion)"
+                        "message": completion_message
                     })
-                    await self._send_message("status_update", {"message": "LLM indicated task completion. Extracting final answer..."})
-                    final_page_details = await self.browser.get_page_details()
-                    break
+                    step_counter += 1
+                    await asyncio.sleep(0.5)
+                    continue
 
                 result = await self.execute_action(action)
                 if not result.get("success", False):
@@ -422,11 +437,11 @@ class Agent:
                 })
 
                 step_counter += 1
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1.0)
 
             if self.is_running and final_page_details:
                 logger.info(
-                    "Execution loop finished successfully. Attempting to extract final answer.")
+                    "Execution loop finished (goal met). Attempting to extract final answer.")
                 answer_result = await self.extract_final_answer(self.goal, final_page_details)
 
                 final_message = "No specific answer extracted."
@@ -670,7 +685,7 @@ class Agent:
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
             prompt = f"""
-            You are a web automation planner determining the *single next step*. Prioritize asking for user input if clarification is needed. Break down complex tasks like searching into multiple steps. Consider exploring links for more information.
+            You are a meticulous web automation planner determining the *single next logical step* towards the overall goal. Prioritize asking for user input if clarification is needed. Break down complex tasks thoroughly.
 
             OVERALL GOAL: {self.goal}
 
@@ -683,27 +698,27 @@ class Agent:
             CURRENT WEB PAGE STATE:
             URL: {url}
             TITLE: {title}
-            HTML CONTENT EXCERPT (potentially truncated):
+            HTML CONTENT EXCERPT (up to {MAX_PLAN_HTML_LENGTH} chars):
             ```html
             {prompt_html_content}
             ```
 
-            **Instructions:**
-            Based on the goal, conversation, history, and current state, determine the **single most logical next step**.
-            - If the next logical action requires *any* clarification or input from the user (e.g., missing credentials, ambiguous choices, confirmation of the next action), the next step should be to ask the user (e.g., "Ask user for login credentials", "Ask user to confirm proceeding with checkout").
-            - **If the task involves searching:**
-                - If the search query hasn't been typed yet, the next step is "Type '[search query]' into the search bar".
-                - If the search query *was* typed in the previous step (check COMPLETED STEPS HISTORY), the next step is "Click the search button" or "Submit the search".
-            - **If the current page contains information relevant to the goal but more detail might be needed, consider suggesting clicking a relevant link.** For example, if on a search results page, suggest "Click the first relevant search result link". If on a product overview page, suggest "Click the 'Details' or 'Specifications' link".
-            - Otherwise, describe the high-level browser action (e.g., "Click the 'Login' button", "Fill in the search bar").
-            - Consider the history to avoid repetition and ensure progress.
+            **Instructions - Be Thorough:**
+            1.  **Review Progress:** Analyze the GOAL, CONVERSATION, and COMPLETED STEPS. What was the *intended outcome* of the last completed step? Did the CURRENT WEB PAGE STATE reflect that outcome?
+            2.  **Identify Discrepancy:** If the current state doesn't match the expected state after the last step (e.g., tried to click a link but still on the same page), the next step might be to retry the action, try an alternative selector, or diagnose the issue.
+            3.  **Determine Next Logical Action:** If the last step was successful, determine the *single next action* required to make progress towards the OVERALL GOAL.
+                *   **Break Down Tasks:** Decompose complex goals (e.g., "Plan a trip") into smaller, manageable steps (e.g., "Navigate to travel site", "Enter destination", "Enter dates", "Search flights", "Analyze results", "Select flight", "Enter passenger details", etc.).
+                *   **Information Gathering:** If the goal requires finding information, plan steps to navigate to the source, *then* explicitly plan a step like "Extract [specific information] from the page".
+                *   **User Input:** If *any* information or clarification is needed (credentials, choices, confirmation, ambiguity), the next step *must* be to ask the user (e.g., "Ask user for departure airport", "Ask user to confirm item selection").
+                *   **Search Flow:** If searching, plan "Type query", then "Submit search", then "Analyze search results" or "Click first relevant link".
+            4.  **Avoid Loops:** Check COMPLETED STEPS HISTORY. If you are suggesting a step that was recently completed but didn't change the state as expected, consider an alternative approach instead of repeating the exact same step.
 
             **Output Format (JSON only):**
             Return ONLY a JSON object containing the next step description and your reasoning.
             ```json
             {{
-                "next_step": "Description of the single next step (e.g., 'Type '10 richest people' into search bar', 'Click the Google Search button', 'Click the first search result link', 'Ask user for the specific product code').",
-                "thought": "Your reasoning for choosing this step, considering if a search query was just typed or if exploring a link is appropriate."
+                "next_step": "Description of the single next logical step (e.g., 'Type 'cultural festivals spain june 2025' into search bar', 'Click the 'Google Search' button', 'Extract festival names and dates from the page', 'Ask user for preferred hotel budget').",
+                "thought": "Your detailed reasoning: Analyzed history, checked current state vs expected state, identified next logical action towards the goal, considered alternatives, ensured task breakdown."
             }}
             """
             response = await asyncio.to_thread(
@@ -744,32 +759,31 @@ class Agent:
             logger.error(f"Error planning next step: {e}", exc_info=True)
             return None
 
-    async def check_goal_completion(self, current_page_details: Dict[str, Any]) -> bool:
-        """Checks if the overall goal has been met based on the current state."""
+    async def check_goal_completion(self, current_page_details: Dict[str, Any]) -> Dict[str, Any]:
+        """Checks if the overall goal has been *fully* met based on the current state and history. Returns dict with bool and reason."""
         if not self.gemini_model:
             logger.warning("LLM not available, assuming goal not met.")
-            return False
+            return {"goal_achieved": False, "reason": "LLM unavailable"}
 
         try:
             html_content = current_page_details.get("html_content", "")
             url = current_page_details.get("url", "unknown")
             title = current_page_details.get("title", "unknown")
 
-            MAX_CHECK_HTML_LENGTH = 4000  # Keep relatively small for checking
+            MAX_CHECK_HTML_LENGTH = 8000  # Increased slightly
             prompt_html_content = html_content[:MAX_CHECK_HTML_LENGTH] + (
                 "..." if len(html_content) > MAX_CHECK_HTML_LENGTH else "")
 
             history = "\n".join(f"- {s}" for s in self.completed_steps)
-
             formatted_history = "\n".join(
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
             prompt = f"""
-            You are a web automation goal checker.
+            You are a meticulous web automation goal checker. Your task is to determine if the OVERALL GOAL has been *fully and completely* achieved, considering all context.
 
             OVERALL GOAL: {self.goal}
 
-            CONVERSATION HISTORY:
+            FULL CONVERSATION HISTORY:
             {formatted_history}
 
             COMPLETED STEPS HISTORY:
@@ -778,33 +792,37 @@ class Agent:
             CURRENT WEB PAGE STATE:
             URL: {url}
             TITLE: {title}
-            HTML CONTENT EXCERPT (potentially truncated):
+            HTML CONTENT EXCERPT (up to {MAX_CHECK_HTML_LENGTH} chars):
             ```html
             {prompt_html_content}
             ```
 
-            **Instructions:**
-            Based *only* on the OVERALL GOAL, CONVERSATION HISTORY, COMPLETED STEPS HISTORY, and the CURRENT WEB PAGE STATE, determine if the overall goal has been successfully achieved.
-            - Consider if the current state or conversation indicates success.
+            **Instructions - Be Strict:**
+            1.  **Understand the Full Goal:** Re-read the OVERALL GOAL and the CONVERSATION HISTORY. What was the *ultimate* objective?
+            2.  **Verify Final State:** Does the CURRENT WEB PAGE STATE (URL, Title, Content) definitively show that the *entire* goal is complete?
+                *   If the goal was to find information (e.g., "list of festivals"), is that information clearly visible and extracted/presented in the history or current state? Simply being on a page *containing* the info is NOT enough unless the goal was just navigation.
+                *   If the goal was an action (e.g., "book flight", "submit form", "play game"), does the current page confirm successful completion (e.g., a confirmation page, the game interface loaded)?
+                *   If the goal was multi-step (e.g., "plan a trip"), have *all* necessary sub-steps (finding flights, hotels, activities, presenting a summary) been completed according to the history and current state?
+            3.  **Check History:** Does the COMPLETED STEPS HISTORY show a logical progression culminating in the final goal state? Are there any indications of failure or incomplete steps?
+            4.  **Be Conservative:** If there is *any* doubt, or if only part of the goal is met, assume the goal is NOT achieved.
 
             **Output Format (JSON only):**
-            Return ONLY a JSON object with a boolean value and your reasoning.
+            Return ONLY a JSON object with a boolean value and detailed reasoning.
             ```json
             {{
                 "goal_achieved": true | false,
-                "thought": "Your reasoning."
+                "reason": "Your detailed reasoning explaining *why* the goal is considered fully achieved or not, referencing the goal, history, and current page state."
             }}
             """
             response = await asyncio.to_thread(
                 self.gemini_model.generate_content,
                 prompt,
                 generation_config={
-                    "temperature": 0.0,
+                    "temperature": 0.0,  # Be deterministic
                     "response_mime_type": "application/json"
                 }
             )
             text = response.text.strip()
-            # Send the raw LLM response as the thought
             agent_thoughts_logger.info(
                 f"Goal check (Raw LLM Response): {text}")
             await self._send_message("agent_thought", {"thought": f"Goal check (Raw LLM Response):\n```json\n{text}\n```"})
@@ -816,14 +834,13 @@ class Agent:
 
             result = json.loads(text.strip())
             goal_achieved = result.get("goal_achieved", False)
-            # Log the extracted thought if available, but the raw response was already sent
-            thought = result.get(
-                "thought", "No thought provided in parsed JSON.")
+            reason = result.get("reason", "No reason provided.")
             agent_thoughts_logger.info(
-                f"Parsed thought from Goal check: {thought}")
+                f"Parsed thought from Goal check: {reason}")
 
-            logger.info(f"LLM goal check result: {goal_achieved}")
-            return goal_achieved
+            logger.info(
+                f"LLM goal check result: {goal_achieved}. Reason: {reason}")
+            return {"goal_achieved": goal_achieved, "reason": reason}
         except Exception as e:
             logger.error(f"Error checking goal completion: {e}", exc_info=True)
-            return False
+            return {"goal_achieved": False, "reason": f"Error during check: {e}"}

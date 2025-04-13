@@ -34,7 +34,7 @@ class Browser:
         except Exception as e:
             logger.error(f"Browser initialization error: {e}")
             return False
-        
+
     async def element_exists(self, selector: str) -> bool:
         """Check if an element exists on the page."""
         try:
@@ -141,7 +141,7 @@ class Browser:
             original_length = len(html_content)
 
             # Limit HTML size slightly to avoid excessively large prompts, but keep most context
-            MAX_HTML_LENGTH = 20000  # Keep this limit relatively high here
+            MAX_HTML_LENGTH = 30000  # Keep this limit relatively high here
             truncated_length = original_length
             if original_length > MAX_HTML_LENGTH:
                 logger.warning(
