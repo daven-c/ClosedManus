@@ -71,7 +71,8 @@ class Agent:
 
         self.goal = goal
         self.completed_steps = []
-        self.conversation_history = [{"role": "user", "content": goal}]  # Initialize conversation history
+        # Initialize conversation history
+        self.conversation_history = [{"role": "user", "content": goal}]
         self.is_running = True
         self.is_paused = False
         self.is_waiting_user = False
@@ -109,17 +110,21 @@ class Agent:
 
             # First, scan for available elements
             scan_result = await self.browser.scan_actionable_elements()
-            available_elements = scan_result.get("scan_result", {}) if scan_result.get("success") else {}
+            available_elements = scan_result.get(
+                "scan_result", {}) if scan_result.get("success") else {}
 
             # If scanning failed, log it but continue with basic HTML analysis
             if not scan_result.get("success"):
-                logger.warning(f"Element scanning failed, continuing with basic HTML analysis: {scan_result.get('message')}")
-                available_elements = {"warning": "Element scanning failed, relying on basic HTML analysis"}
+                logger.warning(
+                    f"Element scanning failed, continuing with basic HTML analysis: {scan_result.get('message')}")
+                available_elements = {
+                    "warning": "Element scanning failed, relying on basic HTML analysis"}
 
-            formatted_history = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
+            formatted_history = "\n".join(
+                [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
             prompt = f"""
-            You are a web automation expert. Analyze the current page state and determine the exact action needed for this step, or ask the user for clarification if necessary.
+            You are a web automation expert. Your task is to analyze the current page state and determine the exact action needed for the current step. Prioritize asking the user if any information is unclear or missing.
 
             OVERALL GOAL: {self.goal}
 
@@ -141,20 +146,23 @@ class Agent:
             ```
 
             IMPORTANT:
-            1. Check AVAILABLE ELEMENTS before suggesting actions.
-            2. If the step is unclear or requires information not present (e.g., login credentials, specific choices), set action_type to "ask_user" and provide the question in the "value" field.
-            3. Otherwise, determine the next browser action.
+            1. Check AVAILABLE ELEMENTS before suggesting actions. Use these elements whenever possible.
+            2. If the step requires *any* information not immediately clear from the page or history (e.g., login credentials, specific choices, confirmation of intent), set action_type to "ask_user" and provide a clear, specific question in the "value" field. Err on the side of asking if unsure.
+            3. **If the step involves searching (e.g., "Search for X", "Enter X into search bar"), determine if the query needs to be typed *or* if the search needs to be submitted.**
+                - If the query needs typing, use the "type" action.
+                - **If the query has just been typed (check conversation history/previous steps) and the current step is to perform the search or click the search button, use the "click" action on the appropriate search button (e.g., 'Google Search', 'Search').** Look for buttons near the search input in AVAILABLE ELEMENTS.
+            4. Otherwise, determine the next browser action (navigate, click, type, wait, javascript, complete).
 
             Return a JSON object with the following structure:
             {{
                 "action_type": "navigate|click|type|wait|javascript|complete|ask_user",
-                "selector": "CSS selector or Playwright locator (null if ask_user)",
-                "locator_strategy": "css|xpath|text|role|get_by_role|get_by_label (null if ask_user)",
-                "locator_args": {{}},
+                "selector": "CSS selector or Playwright locator (null if ask_user or javascript)",
+                "locator_strategy": "css|xpath|text|role|get_by_role|get_by_label (null if ask_user or javascript)",
+                "locator_args": {{}}, # e.g., {{"role": "button", "name": "Google Search"}} for get_by_role
                 "value": "text to type, URL, wait duration, JS code, or the question to ask the user",
-                "javascript_code": "optional JavaScript code to execute",
+                "javascript_code": "optional JavaScript code to execute (use instead of selector/strategy if needed)",
                 "explanation": "explanation of why this action/question was chosen",
-                "thought": "your reasoning process"
+                "thought": "your reasoning process, including checking if search needs typing vs submitting"
             }}
             """
 
@@ -169,7 +177,8 @@ class Agent:
 
             text = response.text.strip()
             # Send the raw LLM response as the thought
-            agent_thoughts_logger.info(f"Analysis for '{step}' (Raw LLM Response): {text}")
+            agent_thoughts_logger.info(
+                f"Analysis for '{step}' (Raw LLM Response): {text}")
             await self._send_message("agent_thought", {"thought": f"Analysis for '{step}' (Raw LLM Response):\n```json\n{text}\n```"})
 
             if "```json" in text:
@@ -181,16 +190,20 @@ class Agent:
                 action = json.loads(text)
 
                 if not isinstance(action, dict):
-                    logger.error(f"LLM response parsed into a list, not a dict: {action}")
+                    logger.error(
+                        f"LLM response parsed into a list, not a dict: {action}")
                     if isinstance(action, list) and len(action) == 1 and isinstance(action[0], dict):
-                        logger.warning("Assuming the first element of the list is the intended action.")
+                        logger.warning(
+                            "Assuming the first element of the list is the intended action.")
                         action = action[0]
                     else:
                         return {"success": False, "message": "LLM response did not parse into the expected dictionary format."}
 
                 # Log the extracted thought if available, but the raw response was already sent
-                thought = action.get("thought", "No thought provided in parsed JSON.")
-                agent_thoughts_logger.info(f"Parsed thought from analysis for '{step}': {thought}")
+                thought = action.get(
+                    "thought", "No thought provided in parsed JSON.")
+                agent_thoughts_logger.info(
+                    f"Parsed thought from analysis for '{step}': {thought}")
 
                 if action.get("action_type") in ["click", "type"]:
                     if action.get("locator_strategy") == "get_by_role":
@@ -198,12 +211,14 @@ class Agent:
                         action["selector"] = f"role={role_args.get('role', '')}"
                     elif not action.get("selector"):
                         if not action.get("javascript_code"):
-                            logger.warning(f"Missing selector and javascript_code for action: {action}")
+                            logger.warning(
+                                f"Missing selector and javascript_code for action: {action}")
 
                 return {"success": True, "action": action}
 
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON response: {text}")  # Log the text that failed parsing
+                # Log the text that failed parsing
+                logger.error(f"Failed to parse JSON response: {text}")
                 return {"success": False, "message": f"Failed to parse LLM response: {str(e)}"}
 
         except Exception as e:
@@ -224,7 +239,8 @@ class Agent:
             prompt_html_content = html_content[:MAX_ANSWER_HTML_LENGTH] if len(
                 html_content) > MAX_ANSWER_HTML_LENGTH else html_content
 
-            formatted_history = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
+            formatted_history = "\n".join(
+                [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
             prompt = f"""
             You are a web data extraction assistant. Based on the original goal, conversation history, and the final state of the web page, extract the specific answer requested.
@@ -268,7 +284,8 @@ class Agent:
 
             text = response.text.strip()
             # Send the raw LLM response as the thought
-            agent_thoughts_logger.info(f"Final Answer Extraction (Raw LLM Response): {text}")
+            agent_thoughts_logger.info(
+                f"Final Answer Extraction (Raw LLM Response): {text}")
             await self._send_message("agent_thought", {"thought": f"Final Answer Extraction (Raw LLM Response):\n```json\n{text}\n```"})
 
             if "```json" in text:
@@ -278,14 +295,17 @@ class Agent:
 
             result = json.loads(text.strip())
             # Log the extracted thought if available, but the raw response was already sent
-            thought = result.get("thought", "No thought provided in parsed JSON.")
-            agent_thoughts_logger.info(f"Parsed thought from Final Answer Extraction: {thought}")
+            thought = result.get(
+                "thought", "No thought provided in parsed JSON.")
+            agent_thoughts_logger.info(
+                f"Parsed thought from Final Answer Extraction: {thought}")
 
             logger.info(f"LLM final answer extraction result: {result}")
 
             # Additional detail for better error handling
             if not result.get("success"):
-                logger.warning("Answer extraction was not successful according to LLM.")
+                logger.warning(
+                    "Answer extraction was not successful according to LLM.")
                 if not result.get("answer"):
                     result["answer"] = "Could not extract the required information from the final page state."
 
@@ -342,16 +362,20 @@ class Agent:
                 action_type = action.get("action_type")
 
                 if action_type == "ask_user":
-                    question = action.get("value", "I need more information to proceed. Can you please provide details?")
+                    question = action.get(
+                        "value", "I need more information to proceed. Can you please provide details?")
                     logger.info(f"Agent needs input: {question}")
-                    self.conversation_history.append({"role": "agent", "content": question})
+                    self.conversation_history.append(
+                        {"role": "agent", "content": question})
                     await self._send_message("request_user_input", {"message": question})
                     self.is_waiting_user = True
                     continue
 
                 if action_type == "complete":
-                    logger.info(f"LLM analysis indicated completion after step '{next_step}'.")
-                    self.completed_steps.append(f"{next_step} (Marked as complete by LLM)")
+                    logger.info(
+                        f"LLM analysis indicated completion after step '{next_step}'.")
+                    self.completed_steps.append(
+                        f"{next_step} (Marked as complete by LLM)")
                     await self._send_message("step_completed", {
                         "step_index": step_counter,
                         "message": f"Completed: {next_step} (LLM determined completion)"
@@ -376,7 +400,8 @@ class Agent:
                 await asyncio.sleep(0.5)
 
             if self.is_running and final_page_details:
-                logger.info("Execution loop finished successfully. Attempting to extract final answer.")
+                logger.info(
+                    "Execution loop finished successfully. Attempting to extract final answer.")
                 answer_result = await self.extract_final_answer(self.goal, final_page_details)
 
                 final_message = "No specific answer extracted."
@@ -391,12 +416,14 @@ class Agent:
                 })
 
                 if answer_result.get("answer"):
-                    logger.info(f"FINAL ANSWER/RESULT: {answer_result.get('answer')}")
+                    logger.info(
+                        f"FINAL ANSWER/RESULT: {answer_result.get('answer')}")
                 else:
                     logger.warning("No final answer was extracted.")
 
             elif self.is_running:
-                logger.warning("Execution loop finished but final page details were not available.")
+                logger.warning(
+                    "Execution loop finished but final page details were not available.")
                 await self._send_message("execution_complete", {
                     "message": "Goal achieved or process completed, but could not get final page details for answer extraction.",
                     "final_answer_details": {"success": False, "answer": None, "message": "Final page details unavailable."}
@@ -408,7 +435,8 @@ class Agent:
             logger.info("Execution task cancelled.")
             await self._send_message("execution_stopped", {"message": "Execution cancelled."})
         except Exception as e:
-            logger.error(f"Unexpected error in execution loop: {e}", exc_info=True)
+            logger.error(
+                f"Unexpected error in execution loop: {e}", exc_info=True)
             final_page_details_on_error = await self.browser.get_page_details() if self.browser.page else None
             await self._handle_failure(f"Unexpected error: {str(e)}", None, final_page_details_on_error)
         finally:
@@ -428,7 +456,7 @@ class Agent:
             element_present = await self.browser.element_exists(selector)
             if not element_present:
                 return {
-                    "success": False, 
+                    "success": False,
                     "message": f"Element with selector '{selector}' not found on page"
                 }
 
@@ -456,24 +484,30 @@ class Agent:
                     wait_time = float(value) if value else 1.0
                     wait_time = min(10.0, max(0.1, wait_time))
                     await asyncio.sleep(wait_time)
-                    result = {"success": True, "message": f"Waited for {wait_time} seconds"}
+                    result = {"success": True,
+                              "message": f"Waited for {wait_time} seconds"}
                 except ValueError:
-                    result = {"success": False, "message": f"Invalid wait duration: {value}"}
+                    result = {"success": False,
+                              "message": f"Invalid wait duration: {value}"}
 
             elif action_type == "javascript":
                 result = await self.browser.execute_javascript(value)
 
             elif action_type == "complete":
-                result = {"success": True, "message": "Task marked as complete"}
+                result = {"success": True,
+                          "message": "Task marked as complete"}
 
             else:
-                result = {"success": False, "message": f"Unsupported action type: {action_type}"}
+                result = {"success": False,
+                          "message": f"Unsupported action type: {action_type}"}
 
         except Exception as e:
             logger.error(f"Action execution error: {e}", exc_info=True)
-            result = {"success": False, "message": f"Action '{action_type}' failed. Error: {e}"}
+            result = {"success": False,
+                      "message": f"Action '{action_type}' failed. Error: {e}"}
 
-        logger.info(f"Action execution result: {result.get('success')}: {result.get('message')}")
+        logger.info(
+            f"Action execution result: {result.get('success')}: {result.get('message')}")
         return result
 
     async def _handle_failure(self, error_message: str, failed_action: Optional[Dict], page_details_at_failure: Optional[Dict]):
@@ -520,7 +554,8 @@ class Agent:
     async def resume_execution(self):
         logger.debug("Resume execution called.")
         if self.last_error_message:
-            logger.warning("Cannot resume after a failure. Please start a new execution.")
+            logger.warning(
+                "Cannot resume after a failure. Please start a new execution.")
             await self._send_message("error", {"message": "Cannot resume after failure. Please start again."})
             return False
 
@@ -551,17 +586,22 @@ class Agent:
         # Check both is_running and is_waiting_user before proceeding
         if self.is_running and self.is_waiting_user:
             logger.info(f"Received user input while waiting: {user_message}")
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.is_waiting_user = False # Set the flag to allow the loop to continue
-            logger.info("Set is_waiting_user to False. Agent loop should resume on next iteration.") # Add specific log
+            self.conversation_history.append(
+                {"role": "user", "content": user_message})
+            self.is_waiting_user = False  # Set the flag to allow the loop to continue
+            # Add specific log
+            logger.info(
+                "Set is_waiting_user to False. Agent loop should resume on next iteration.")
             await self._send_message("user_input_received", {"message": "Input received, resuming..."})
             # The loop will automatically continue on the next iteration
         elif not self.is_running:
-            logger.warning("Received user input, but execution is not running.")
+            logger.warning(
+                "Received user input, but execution is not running.")
             await self._send_message("error", {"message": "Received input, but execution is not active."})
             # No return needed here as the function ends
         elif not self.is_waiting_user:
-            logger.warning("Received user input, but the agent was not waiting for it.")
+            logger.warning(
+                "Received user input, but the agent was not waiting for it.")
             # Optionally inform the user, or just log it.
             # await self._send_message("info", {"message": "Received input, but I wasn't waiting for any."})
             # No return needed here
@@ -594,16 +634,18 @@ class Agent:
             title = current_page_details.get("title", "unknown")
 
             MAX_PLAN_HTML_LENGTH = 4000  # Keep relatively small for planning
-            prompt_html_content = html_content[:MAX_PLAN_HTML_LENGTH] + ("..." if len(html_content) > MAX_PLAN_HTML_LENGTH else "")
+            prompt_html_content = html_content[:MAX_PLAN_HTML_LENGTH] + (
+                "..." if len(html_content) > MAX_PLAN_HTML_LENGTH else "")
 
             history = "\n".join(f"- {s}" for s in self.completed_steps)
             if not history:
                 history = "No steps completed yet."
 
-            formatted_history = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
+            formatted_history = "\n".join(
+                [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
             prompt = f"""
-            You are a web automation planner determining the *single next step*.
+            You are a web automation planner determining the *single next step*. Prioritize asking for user input if clarification is needed. Break down complex tasks like searching into multiple steps.
 
             OVERALL GOAL: {self.goal}
 
@@ -623,16 +665,19 @@ class Agent:
 
             **Instructions:**
             Based on the goal, conversation, history, and current state, determine the **single most logical next step**.
-            - If the next logical action requires clarification or input from the user (e.g., credentials, choices), the next step should be to ask the user.
-            - Otherwise, describe the high-level browser action (e.g., "Click the 'Login' button").
-            - Consider the history to avoid repetition.
+            - If the next logical action requires *any* clarification or input from the user (e.g., missing credentials, ambiguous choices, confirmation of the next action), the next step should be to ask the user (e.g., "Ask user for login credentials", "Ask user to confirm proceeding with checkout").
+            - **If the task involves searching:**
+                - If the search query hasn't been typed yet, the next step is "Type '[search query]' into the search bar".
+                - **If the search query *was* typed in the previous step (check COMPLETED STEPS HISTORY), the next step is "Click the search button" or "Submit the search".**
+            - Otherwise, describe the high-level browser action (e.g., "Click the 'Login' button", "Fill in the search bar").
+            - Consider the history to avoid repetition and ensure progress.
 
             **Output Format (JSON only):**
-            Return ONLY a JSON object containing the next step description and your reasoning. If asking the user, the next_step should reflect that.
+            Return ONLY a JSON object containing the next step description and your reasoning.
             ```json
             {{
-                "next_step": "Description of the single next step (e.g., 'Ask user for login credentials' or 'Click Submit button').",
-                "thought": "Your reasoning for choosing this step."
+                "next_step": "Description of the single next step (e.g., 'Type '10 richest people' into search bar', 'Click the Google Search button', 'Ask user for the specific product code').",
+                "thought": "Your reasoning for choosing this step, considering if a search query was just typed."
             }}
             """
             response = await asyncio.to_thread(
@@ -645,7 +690,8 @@ class Agent:
             )
             text = response.text.strip()
             # Send the raw LLM response as the thought
-            agent_thoughts_logger.info(f"Planning next step (Raw LLM Response): {text}")
+            agent_thoughts_logger.info(
+                f"Planning next step (Raw LLM Response): {text}")
             await self._send_message("agent_thought", {"thought": f"Planning next step (Raw LLM Response):\n```json\n{text}\n```"})
 
             if "```json" in text:
@@ -656,14 +702,17 @@ class Agent:
             result = json.loads(text.strip())
             next_step = result.get("next_step")
             # Log the extracted thought if available, but the raw response was already sent
-            thought = result.get("thought", "No thought provided in parsed JSON.")
-            agent_thoughts_logger.info(f"Parsed thought from Planning next step: {thought}")
+            thought = result.get(
+                "thought", "No thought provided in parsed JSON.")
+            agent_thoughts_logger.info(
+                f"Parsed thought from Planning next step: {thought}")
 
             if next_step and isinstance(next_step, str):
                 logger.info(f"LLM planned next step: {next_step}")
                 return next_step
             else:
-                logger.error(f"LLM failed to provide a valid next step: {result}")
+                logger.error(
+                    f"LLM failed to provide a valid next step: {result}")
                 return None
         except Exception as e:
             logger.error(f"Error planning next step: {e}", exc_info=True)
@@ -681,11 +730,13 @@ class Agent:
             title = current_page_details.get("title", "unknown")
 
             MAX_CHECK_HTML_LENGTH = 4000  # Keep relatively small for checking
-            prompt_html_content = html_content[:MAX_CHECK_HTML_LENGTH] + ("..." if len(html_content) > MAX_CHECK_HTML_LENGTH else "")
+            prompt_html_content = html_content[:MAX_CHECK_HTML_LENGTH] + (
+                "..." if len(html_content) > MAX_CHECK_HTML_LENGTH else "")
 
             history = "\n".join(f"- {s}" for s in self.completed_steps)
 
-            formatted_history = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
+            formatted_history = "\n".join(
+                [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
             prompt = f"""
             You are a web automation goal checker.
@@ -728,7 +779,8 @@ class Agent:
             )
             text = response.text.strip()
             # Send the raw LLM response as the thought
-            agent_thoughts_logger.info(f"Goal check (Raw LLM Response): {text}")
+            agent_thoughts_logger.info(
+                f"Goal check (Raw LLM Response): {text}")
             await self._send_message("agent_thought", {"thought": f"Goal check (Raw LLM Response):\n```json\n{text}\n```"})
 
             if "```json" in text:
@@ -739,12 +791,13 @@ class Agent:
             result = json.loads(text.strip())
             goal_achieved = result.get("goal_achieved", False)
             # Log the extracted thought if available, but the raw response was already sent
-            thought = result.get("thought", "No thought provided in parsed JSON.")
-            agent_thoughts_logger.info(f"Parsed thought from Goal check: {thought}")
+            thought = result.get(
+                "thought", "No thought provided in parsed JSON.")
+            agent_thoughts_logger.info(
+                f"Parsed thought from Goal check: {thought}")
 
             logger.info(f"LLM goal check result: {goal_achieved}")
             return goal_achieved
         except Exception as e:
             logger.error(f"Error checking goal completion: {e}", exc_info=True)
             return False
-
