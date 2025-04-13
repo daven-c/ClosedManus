@@ -34,6 +34,14 @@ class Browser:
         except Exception as e:
             logger.error(f"Browser initialization error: {e}")
             return False
+        
+    async def element_exists(self, selector: str) -> bool:
+        """Check if an element exists on the page."""
+        try:
+            element = await self.page.wait_for_selector(selector, timeout=2000)
+            return element is not None
+        except Exception:
+            return False
 
     async def navigate(self, url: str) -> Dict[str, Any]:
         """Navigate to a URL"""

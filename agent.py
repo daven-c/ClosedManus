@@ -62,118 +62,100 @@ class Agent:
             self.gemini_model = None
 
     async def analyze_state(self, page_details: Dict[str, Any], step: str) -> Dict[str, Any]:
+        """Analyzes the current page state and determines the next action to take."""
         if not self.gemini_model:
             return {"success": False, "message": "LLM not initialized"}
 
-        html_content = page_details.get('html_content', '')
         try:
-            # Log length received from browser.py
-            received_length = len(html_content)
-            logger.debug(
-                f"analyze_state received HTML length: {received_length}")
+            html_content = page_details.get('html_content', '')
+            url = page_details.get('url', 'unknown')
+            title = page_details.get('title', 'unknown')
 
-            MAX_PROMPT_HTML_LENGTH = 18000
-            prompt_html_content = html_content
-            final_prompt_length = received_length
-            if received_length > MAX_PROMPT_HTML_LENGTH:
-                prompt_html_content = html_content[:MAX_PROMPT_HTML_LENGTH] + \
-                    "\n... (truncated for analyze_state prompt)"
-                final_prompt_length = len(prompt_html_content)
-                logger.warning(
-                    f"analyze_state truncating HTML from {received_length} to {final_prompt_length} for prompt.")
-            else:
-                logger.debug(
-                    f"analyze_state using HTML length {final_prompt_length} for prompt.")
+            # First, scan for available elements
+            scan_result = await self.browser.scan_actionable_elements()
+            available_elements = scan_result.get("scan_result", {}) if scan_result.get("success") else {}
 
             prompt = f"""
-            You are an expert web automation assistant using Playwright. Analyze the HTML and current step description to determine the single best action, prioritizing robust Playwright locators.
+            You are a web automation expert. Analyze the current page state and determine the exact action needed for this step.
+            
+            STEP TO EXECUTE: {step}
+            
+            CURRENT PAGE STATE:
+            URL: {url}
+            TITLE: {title}
 
-            CURRENT STEP DESCRIPTION: {step}
+            AVAILABLE ELEMENTS ON PAGE:
+            {json.dumps(available_elements, indent=2)}
 
-            CURRENT WEB PAGE DETAILS:
-            URL: {page_details.get('url')}
-            TITLE: {page_details.get('title')}
-
-            CURRENT PAGE HTML (potentially truncated):
+            HTML CONTENT:
             ```html
-            {prompt_html_content}
+            {html_content[:18000]}
             ```
+            
+            IMPORTANT: Before suggesting any action:
+            1. Check if the required element exists in the AVAILABLE ELEMENTS list
+            2. Only suggest clicking or typing in elements that are confirmed present
+            3. If an element is not found, suggest a 'wait' action or alternative approach
 
-            **Instructions:**
-            1.  Review the STEP DESCRIPTION and HTML.
-            2.  Choose ONE action: `navigate`, `click`, `type`, `wait`, `complete`, `javascript` (use 'complete' if the step description itself is already satisfied by the current state).
-            3.  **If choosing `click` or `type`:**
-                a.  Identify the *exact* target element in the HTML relevant to the step description.
-                b.  Choose the **most appropriate Playwright locator strategy** based on the element's attributes in the HTML.
-                c.  **Locator Strategy Priority:** `get_by_role`, `get_by_text`, `get_by_label`, `get_by_placeholder`, `get_by_test_id`, `css` (last resort).
-                d.  Provide the chosen `strategy` and its corresponding arguments (`role`, `name`, `text`, `label`, `placeholder`, `test_id`, `selector`, `exact`).
-            4.  **If choosing `javascript`:**
-                a.  Write a concise JavaScript snippet that interacts with the page to achieve the step.
-                b.  The script should handle element selection and interaction directly in the browser context.
-                c.  You can use document.querySelector, document.querySelectorAll and other DOM APIs to find and interact with elements.
-                d.  Your script can return values back to the agent if needed.
-            5.  If waiting is needed, choose `wait`.
-
-            **Output Format (JSON only):**
-            Return ONLY a valid JSON object. Include a brief 'thought' process explaining your choices.
-            ```json
+            Return a JSON object with the following structure:
             {{
-                "action_type": "navigate|click|type|wait|complete|javascript",
-                "locator_strategy": "css|get_by_role|get_by_text|get_by_label|get_by_placeholder|get_by_test_id|null",
-                "locator_args": {{ ... arguments ... }},
-                "value": "URL, text to type, wait duration, or null if not applicable",
-                "javascript_code": "JavaScript code to execute in browser context (only for javascript action type)",
-                "explanation": "Brief justification for the chosen strategy and arguments, referencing HTML evidence.",
-                "thought": "Your reasoning for choosing this action, strategy, and arguments based on the step and HTML."
+                "action_type": "navigate|click|type|wait|javascript|complete",
+                "selector": "CSS selector or Playwright locator",
+                "locator_strategy": "css|xpath|text|role|get_by_role|get_by_label",
+                "locator_args": {{}},
+                "value": "text to type or URL to navigate to",
+                "javascript_code": "optional JavaScript code to execute",
+                "explanation": "explanation of why this action was chosen",
+                "thought": "your reasoning process"
             }}
             """
+
+            # Rest of the existing analyze_state code...
+
             response = await asyncio.to_thread(
                 self.gemini_model.generate_content,
                 prompt,
                 generation_config={
-                    "temperature": 0.05,
+                    "temperature": 0.1,
                     "response_mime_type": "application/json"
                 }
             )
 
-            text = response.text
+            # Extract the response text and clean it up
+            text = response.text.strip()
+            print(type(text), text)
+            
+            # Remove any markdown code block indicators and get just the JSON content
             if "```json" in text:
-                text = text.split("```json")[1].split("```")[0]
+                text = text.split("```json")[1].split("```")[0].strip()
+                text = text[0]
             elif "```" in text:
-                text = text.split("```")[1].split("```")[0]
-
+                text = text.split("```")[1].split("```")[0].strip()
+                text = text[0]
+            
+            print(text)
+            
+            # Parse the JSON
             try:
-                action = json.loads(text.strip())
-                if isinstance(action, dict) and action.get("action_type"):
-                    thought = action.get("thought", "No thought provided.")
-                    agent_thoughts_logger.info(
-                        f"Analysis for '{step}': {thought}")
-                    await self._send_message("agent_thought", {"thought": f"Analysis for '{step}': {thought}"})
+                action = json.loads(text)
 
-                    if action["action_type"] in ["click", "type"]:
-                        if not action.get("locator_strategy") or not action.get("locator_args"):
-                            logger.error(
-                                f"LLM returned click/type action without locator strategy/args: {action}")
-                            return {"success": False, "message": "LLM returned invalid locator details.", "html_used": html_content}
-                    elif action["action_type"] == "javascript":
-                        if not action.get("javascript_code"):
-                            logger.error(
-                                f"LLM returned javascript action without code: {action}")
-                            return {"success": False, "message": "LLM returned javascript action without code.", "html_used": html_content}
-                    logger.info(f"LLM action determined: {action}")
-                    return {"success": True, "action": action, "html_used": html_content}
-                else:
-                    logger.error(
-                        f"LLM returned invalid action structure: {action}")
-                    return {"success": False, "message": "LLM returned invalid action structure.", "html_used": html_content}
+                # Validate and format the action
+                if action["action_type"] in ["click", "type"]:
+                    if action.get("locator_strategy") == "get_by_role":
+                        role_args = action.get("locator_args", {})
+                        action["selector"] = f"role={role_args.get('role', '')}"
+                    elif not action.get("selector"):
+                        return {"success": False, "message": "Missing selector for click/type action"}
+
+                return {"success": True, "action": action}
+
             except json.JSONDecodeError as e:
-                logger.error(
-                    f"Failed to decode LLM JSON response: {e}. Response text: {text}")
-                return {"success": False, "message": f"Failed to decode LLM JSON response: {e}", "html_used": html_content}
+                logger.error(f"Failed to parse JSON response: {text}")
+                return {"success": False, "message": f"Failed to parse LLM response: {str(e)}"}
 
         except Exception as e:
             logger.error(f"Error analyzing state: {e}", exc_info=True)
-            return {"success": False, "message": f"Analysis failed: {e}", "html_used": html_content}
+            return {"success": False, "message": f"Analysis error: {str(e)}"}
 
     async def analyze_possible_actions(self, page_details: Dict[str, Any], step_description: str) -> Dict[str, Any]:
         """Scans the page using JavaScript first, then determines the best action to take based on the scan results"""
@@ -662,259 +644,92 @@ class Agent:
             return False
 
         # Use advanced execution with look-ahead planning
-        self.task = asyncio.create_task(self._advanced_execution_loop())
+        self.task = asyncio.create_task(self._basic_execution_loop())
         logger.info(f"Starting advanced execution towards goal: {self.goal}")
         await self._send_message("execution_started", {"goal": self.goal})
         return True
 
-    async def _advanced_execution_loop(self):
-        """Enhanced execution loop that uses multi-step planning, verification and error recovery"""
-        logger.info(
-            "Starting advanced execution loop with look-ahead planning and error recovery")
-        last_page_details_analyzed = None
+    async def _basic_execution_loop(self):
+        """Basic execution loop that generates and executes one step at a time."""
+        logger.info("Starting basic execution loop.")
         step_counter = 0
-        current_plan = None
-        current_plan_index = 0
 
         try:
-            # Initial page loading
-            page_details = await self.browser.get_page_details()
-            if not page_details.get("success", False):
-                await self._handle_failure(f"Failed to get initial page details: {page_details.get('message')}", None, page_details)
-                return
-
-            # Initial multi-step planning
-            await self._send_message("planning_step", {"message": "Creating execution plan..."})
-            current_plan = await self.create_multi_step_plan(page_details)
-            if not current_plan or not isinstance(current_plan, list) or len(current_plan) == 0:
-                await self._handle_failure("Failed to create initial plan.", None, page_details)
-                return
-
-            # Send the plan to the UI
-            await self._send_message("plan_created", {"plan": current_plan})
-            logger.info(f"Created plan with {len(current_plan)} steps")
-
-            while self.is_running and current_plan_index < len(current_plan):
+            while self.is_running:
                 if self.is_paused:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.5)
                     continue
 
-                # Check for error states and attempt recovery before proceeding
-                error_state = await self.browser.detect_error_state()
-                if error_state.get("hasError", False):
-                    error_type = error_state.get("errorType")
-                    error_message = error_state.get(
-                        "errorMessage", "Unknown error")
-
-                    logger.warning(
-                        f"Detected error state: {error_type} - {error_message}")
-                    await self._send_message("agent_thought", {
-                        "thought": f"Detected potential issue: {error_message}. Attempting automatic recovery..."
-                    })
-
-                    # Try to recover automatically
-                    recovery_result = await self.browser.attempt_recovery(error_state)
-                    if recovery_result.get("success", True):
-                        action_taken = recovery_result.get(
-                            "action_taken", "none")
-                        if action_taken != "none":
-                            logger.info(
-                                f"Automatic recovery succeeded with action: {action_taken}")
-                            await self._send_message("agent_thought", {
-                                "thought": f"Automatic recovery succeeded: {recovery_result.get('message')}"
-                            })
-
-                            # Brief pause to let the recovery take effect
-                            await asyncio.sleep(1)
-                            continue  # Skip to the next loop iteration to reassess the page
-                    else:
-                        # If recovery failed and it's a serious error that would prevent execution,
-                        # we might need to involve the user
-                        if error_type in ['captcha', 'authentication_required']:
-                            await self._handle_failure(
-                                f"Automatic recovery not possible: {error_message}. User intervention needed.",
-                                {"error_type": error_type},
-                                page_details
-                            )
-                            return
-
-                # Get the current step from the plan
-                current_step = current_plan[current_plan_index]
-                self.last_step_description = current_step
-
-                # Notify about executing the step
-                await self._send_message("executing_step", {
-                    "step_index": step_counter,
-                    "step": current_step
-                })
-
-                # Get the latest page details
+                # Get the current page details
                 page_details = await self.browser.get_page_details()
                 if not page_details.get("success", False):
                     await self._handle_failure(f"Failed to get page details: {page_details.get('message')}", None, page_details)
-                    continue
+                    return
 
-                # Use JavaScript-based analysis to determine the action
-                await self._send_message("analyzing", {
-                    "message": f"Analyzing page for step: {current_step}"
+                # Check if the overall goal is met
+                goal_met = await self.check_goal_completion(page_details)
+                if goal_met:
+                    await self._send_message("execution_complete", {"message": "Overall goal achieved."})
+                    break
+
+                # Generate the next step based on the current HTML
+                await self._send_message("planning_step", {"message": "Determining the next step..."})
+                next_step = await self.plan_next_step(page_details)
+                if not next_step:
+                    await self._handle_failure("Failed to determine the next step.", None, page_details)
+                    return
+
+                # Notify about the step being executed
+                await self._send_message("executing_step", {
+                    "step_index": step_counter,
+                    "step": next_step
                 })
 
-                analysis = await self.analyze_possible_actions(page_details, current_step)
+                # Analyze the page and determine the action for the step
+                analysis = await self.analyze_state(page_details, next_step)
                 if not analysis.get("success", False):
-                    # Fall back to HTML-based analysis
-                    logger.warning(
-                        "JavaScript analysis failed, falling back to HTML analysis")
-                    await self._send_message("analyzing", {
-                        "message": f"JavaScript scan failed, using HTML analysis for step: {current_step}"
-                    })
-                    analysis = await self.analyze_state(page_details, current_step)
-                    if not analysis.get("success", False):
-                        await self._handle_failure(
-                            f"Analysis failed: {analysis.get('message')}", None, page_details)
-                        continue
+                    await self._handle_failure(f"Analysis failed: {analysis.get('message')}", None, page_details)
+                    return
 
                 action = analysis.get("action", {})
                 action_type = action.get("action_type")
 
                 if action_type == "complete":
-                    logger.info(
-                        f"Step '{current_step}' deemed complete by analysis.")
-                    self.completed_steps.append(
-                        f"{current_step} (Auto-completed)")
+                    logger.info(f"Step '{next_step}' deemed complete by analysis.")
+                    self.completed_steps.append(f"{next_step} (Auto-completed)")
                     await self._send_message("step_completed", {
                         "step_index": step_counter,
-                        "message": f"Completed: {current_step} (Auto-completed)"
+                        "message": f"Completed: {next_step} (Auto-completed)"
                     })
-
-                    # Move to next step in plan
-                    current_plan_index += 1
                     step_counter += 1
                     continue
 
                 # Execute the action
-                await self._send_message("action", {
-                    "type": action_type,
-                    "details": action
+                result = await self.execute_action(action)
+                if not result.get("success", False):
+                    await self._handle_failure(f"Action failed: {result.get('message')}", action, page_details)
+                    return
+
+                # Mark the step as completed
+                self.completed_steps.append(next_step)
+                await self._send_message("step_completed", {
+                    "step_index": step_counter,
+                    "message": f"Completed: {next_step}"
                 })
 
-                result = await self.execute_action(action)
-
-                # Check for navigation or network errors immediately after action
-                if not result.get("success", False):
-                    # Before giving up, check if we hit a common error state that
-                    # we can recover from automatically
-                    error_state = await self.browser.detect_error_state()
-                    if error_state.get("hasError", False):
-                        recovery_result = await self.browser.attempt_recovery(error_state)
-                        if recovery_result.get("success", False):
-                            # If recovery worked, retry the action
-                            # Give the page time to stabilize
-                            await asyncio.sleep(1)
-                            # Retry
-                            result = await self.execute_action(action)
-
-                    if not result.get("success", False):
-                        # If we still failed after recovery attempt (or if no recovery was possible)
-                        await self._handle_failure(
-                            f"Action failed: {result.get('message')}", action, page_details)
-                        continue
-
-                # Update page details after the action
-                updated_page_details = await self.browser.get_page_details()
-                if not updated_page_details.get("success", False):
-                    logger.warning(
-                        "Could not get updated page details after action.")
-                    updated_page_details = page_details  # Use previous details as fallback
-
-                # Verify step completion
-                verification = await self.verify_step_completion(current_step, updated_page_details)
-                verified = verification.get("verified", False)
-                confidence = verification.get("confidence", 0)
-                explanation = verification.get(
-                    "explanation", "No explanation provided.")
-
-                agent_thoughts_logger.info(
-                    f"Step verification: {explanation} (Verified: {verified}, Confidence: {confidence})")
-                await self._send_message("agent_thought", {"thought": f"Verification: {explanation}"})
-
-                if verified or confidence < 70:  # If verified or we're not confident it failed
-                    # Add to completed steps
-                    self.completed_steps.append(current_step)
-                    await self._send_message("step_completed", {
-                        "step_index": step_counter,
-                        "message": f"Completed: {current_step}"
-                    })
-
-                    # Move to the next step in the plan
-                    current_plan_index += 1
-                    step_counter += 1
-
-                    # Check if the overall goal is met
-                    if current_plan_index >= len(current_plan):
-                        goal_met = await self.check_goal_completion(updated_page_details)
-                        if goal_met:
-                            await self._send_message("execution_complete", {"message": "Overall goal achieved."})
-                            break
-                        else:
-                            # If we've completed the plan but the goal isn't met, create a new plan
-                            await self._send_message("planning_step", {"message": "Creating follow-up plan..."})
-                            new_plan = await self.create_multi_step_plan(updated_page_details)
-                            if new_plan and len(new_plan) > 0:
-                                current_plan = new_plan
-                                current_plan_index = 0
-                                await self._send_message("plan_created", {"plan": current_plan})
-                                logger.info(
-                                    f"Created new plan with {len(current_plan)} steps")
-                            else:
-                                await self._handle_failure("Failed to create new plan after completing all steps.", None, updated_page_details)
-                                break
-                else:
-                    # Step wasn't verified, adapt the plan
-                    logger.info(
-                        f"Step verification failed with confidence {confidence}. Adapting plan...")
-                    await self._send_message("analyzing", {
-                        "message": f"Step verification failed ({confidence}% confidence). Adapting plan..."
-                    })
-
-                    adapted_plan = await self.adapt_plan_if_needed(
-                        current_plan[current_plan_index:],
-                        current_step,
-                        verification,
-                        updated_page_details
-                    )
-
-                    if adapted_plan and len(adapted_plan) > 0:
-                        # Replace remaining steps with adapted plan
-                        new_full_plan = self.completed_steps + adapted_plan
-                        current_plan = adapted_plan
-                        current_plan_index = 0  # Reset to start of the new adapted plan
-
-                        # Notify about plan changes
-                        await self._send_message("plan_created", {"plan": new_full_plan})
-                        logger.info(
-                            f"Adapted plan with {len(adapted_plan)} new steps")
-                    else:
-                        # If we can't adapt the plan, continue with existing one
-                        logger.warning(
-                            "Could not adapt plan, continuing with current plan")
-                        current_plan_index += 1
-                        step_counter += 1
-
-                # Brief pause between actions
+                step_counter += 1
                 await asyncio.sleep(0.5)
 
-            if not self.is_paused:
-                logger.info("Execution loop finished")
+            logger.info("Basic execution loop finished.")
 
         except asyncio.CancelledError:
             logger.info("Execution task cancelled.")
         except Exception as e:
-            logger.error(
-                f"Unexpected error in execution loop: {e}", exc_info=True)
-            await self._handle_failure(f"Unexpected error: {str(e)}", None, last_page_details_analyzed)
+            logger.error(f"Unexpected error in execution loop: {e}", exc_info=True)
+            await self._handle_failure(f"Unexpected error: {str(e)}", None, None)
         finally:
             self.is_running = False
-            logger.info("Advanced execution loop stopped.")
+            logger.info("Basic execution loop stopped.")
 
     async def execute_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
         """Execute an action determined by the LLM."""
@@ -924,42 +739,30 @@ class Agent:
         action_type = action.get("action_type", "").lower()
         selector = action.get("selector", "")
         value = action.get("value", "")
-        explanation = action.get("explanation", "")
+
+        # Verify element presence before interaction
+        if action_type in ["click", "type"]:
+            element_present = await self.browser.element_exists(selector)
+            if not element_present:
+                return {
+                    "success": False, 
+                    "message": f"Element with selector '{selector}' not found on page"
+                }
+        #explanation = action.get("explanation", "")
 
         logger.info(
             f"Executing action: {action_type} with values: {selector=}, {value=}")
 
+        # Validate the selector for actions that require it
+        if action_type in ["click", "type"] and not selector:
+            logger.error(f"Invalid or missing selector for action: {action}")
+            return {"success": False, "message": "Invalid or missing selector for action"}
+
         result = {"success": False, "message": "Unknown action type"}
 
-        # Before action execution, capture page state for verification
-        before_state = {}
-        try:
-            screenshot_result = await self.browser.capture_screenshot()
-            if screenshot_result.get("success"):
-                before_state["screenshot"] = screenshot_result.get(
-                    "screenshot")
-        except Exception as e:
-            logger.warning(f"Failed to capture before-screenshot: {e}")
-
-        # Execute the appropriate action
         try:
             if action_type == "navigate":
                 result = await self.browser.navigate(value)
-
-                # Handle navigation errors and attempt recovery
-                if not result.get("success", False):
-                    error_msg = result.get("message", "")
-                    logger.warning(f"Navigation failed: {error_msg}")
-
-                    # Check if it's a protocol error (missing http://)
-                    if "invalid URL" in error_msg or "Protocol error" in error_msg:
-                        # This should be fixed by our browser.py update, but let's add a backup recovery
-                        fixed_url = value
-                        if not fixed_url.startswith(('http://', 'https://')):
-                            fixed_url = f"https://{value}"
-                            logger.info(
-                                f"Retrying navigation with fixed URL: {fixed_url}")
-                            result = await self.browser.navigate(fixed_url)
 
             elif action_type == "click":
                 result = await self.browser.click(selector)
@@ -970,97 +773,26 @@ class Agent:
             elif action_type == "wait":
                 try:
                     wait_time = float(value) if value else 1.0
-                    # Limit between 0.1 and 10 seconds
-                    wait_time = min(10.0, max(0.1, wait_time))
+                    wait_time = min(10.0, max(0.1, wait_time))  # Limit between 0.1 and 10 seconds
                     await asyncio.sleep(wait_time)
-                    result = {"success": True,
-                              "message": f"Waited for {wait_time} seconds"}
+                    result = {"success": True, "message": f"Waited for {wait_time} seconds"}
                 except ValueError:
-                    result = {"success": False,
-                              "message": f"Invalid wait duration: {value}"}
+                    result = {"success": False, "message": f"Invalid wait duration: {value}"}
 
             elif action_type == "javascript":
                 result = await self.browser.execute_javascript(value)
 
             elif action_type == "complete":
-                result = {"success": True,
-                          "message": "Task marked as complete"}
+                result = {"success": True, "message": "Task marked as complete"}
 
             else:
-                result = {"success": False,
-                          "message": f"Unsupported action type: {action_type}"}
+                result = {"success": False, "message": f"Unsupported action type: {action_type}"}
+
         except Exception as e:
             logger.error(f"Action execution error: {e}", exc_info=True)
-            result = {"success": False,
-                      "message": f"Action '{action_type}' failed. Error: {e}"}
+            result = {"success": False, "message": f"Action '{action_type}' failed. Error: {e}"}
 
-        # After successful action execution, verify the change
-        if result.get("success"):
-            try:
-                # Check for error states like cookie dialogs, popups, etc.
-                error_state = await self.browser.detect_error_state()
-
-                if error_state.get("hasError", False):
-                    error_type = error_state.get("errorType")
-                    error_msg = error_state.get("errorMessage")
-                    logger.warning(
-                        f"Detected error state after action: {error_type}: {error_msg}")
-
-                    # Attempt automatic recovery
-                    recovery_result = await self.browser.attempt_recovery(error_state)
-
-                    if recovery_result.get("success"):
-                        logger.info(
-                            f"Auto-recovery successful: {recovery_result.get('message')}")
-                        # Update result to indicate recovery was needed but succeeded
-                        result["recovery_needed"] = True
-                        result["recovery_action"] = recovery_result.get(
-                            "action_taken")
-                        result["recovery_message"] = recovery_result.get(
-                            "message")
-                    else:
-                        logger.warning(
-                            f"Auto-recovery failed: {recovery_result.get('message')}")
-                        # If recovery failed and this is a blocking error, report it
-                        if error_type in ["captcha", "authentication_required"]:
-                            result["success"] = False
-                            result["message"] = f"Blocked by {error_type}: {error_msg}"
-
-                # Capture a screenshot after action to visually verify state change
-                after_screenshot_result = await self.browser.capture_screenshot()
-                if after_screenshot_result.get("success") and before_state.get("screenshot"):
-                    # Compare before/after visual states
-                    visual_comparison = await self.browser.compare_visual_states(
-                        before_state.get("screenshot"),
-                        after_screenshot_result.get("screenshot")
-                    )
-
-                    # Update the result with visual verification data
-                    if visual_comparison.get("success"):
-                        result["visual_change"] = visual_comparison.get(
-                            "visual_change")
-                        result["visual_difference_score"] = visual_comparison.get(
-                            "difference_score", 0)
-
-                    # Share the screenshot with the user via websocket if available
-                    if self.websocket:
-                        try:
-                            await self.websocket.send_json({
-                                "type": "browser_screenshot",
-                                "screenshot": after_screenshot_result.get("screenshot")
-                            })
-                        except Exception as ws_error:
-                            logger.error(
-                                f"Failed to send screenshot via WebSocket: {ws_error}")
-
-            except Exception as verify_error:
-                logger.error(f"Post-action verification error: {verify_error}")
-
-        # Update the original action dict with the execution result
-        action["execution_result"] = result
-
-        logger.info(
-            f"Action execution result: {result.get('success')}: {result.get('message')}")
+        logger.info(f"Action execution result: {result.get('success')}: {result.get('message')}")
         return result
 
     async def _handle_failure(self, error_message: str, failed_action: Optional[Dict], page_details_at_failure: Optional[Dict]):
