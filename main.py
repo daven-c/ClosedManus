@@ -7,8 +7,8 @@ from typing import Dict, Any, List
 
 # External dependencies
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
@@ -22,7 +22,6 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
         logging.FileHandler("web_automation.log")
     ]
 )
@@ -72,6 +71,48 @@ def get_index():
         logger.error(f"index.html not found in {static_dir}")
         return HTMLResponse("<html><body><h1>Error</h1><p>UI template not found.</p></body></html>", status_code=500)
 
+# --- API Routes ---
+
+
+@app.get("/api/status")
+def get_status():
+    """Returns the current agent status"""
+    if not agent:
+        return JSONResponse(status_code=500, content={"error": "Agent not initialized"})
+
+    status = {
+        "is_running": agent.is_running,
+        "is_paused": agent.is_paused,
+        "current_goal": agent.goal,
+        "completed_steps": agent.completed_steps
+    }
+    return status
+
+
+@app.get("/api/metrics")
+def get_metrics():
+    """Returns telemetry metrics for monitoring"""
+    if not agent or not hasattr(agent, "llm_service") or not agent.llm_service:
+        return JSONResponse(status_code=500, content={"error": "LLM service not initialized"})
+
+    try:
+        metrics = agent.llm_service.get_telemetry_report()
+        return metrics
+    except Exception as e:
+        logger.error(f"Error retrieving metrics: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/dashboard")
+def get_dashboard():
+    """Serves the metrics dashboard HTML"""
+    metrics_dashboard_path = os.path.join(static_dir, "dashboard.html")
+    if os.path.exists(metrics_dashboard_path):
+        return FileResponse(metrics_dashboard_path)
+    else:
+        logger.error(f"dashboard.html not found in {static_dir}")
+        return HTMLResponse("<html><body><h1>Error</h1><p>Dashboard template not found.</p></body></html>", status_code=404)
+
 # --- WebSocket Endpoint ---
 
 
@@ -95,67 +136,42 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # Process commands
             if command == "execute":
-                prompt = message.get("prompt", "")
-                if prompt:
-                    # Ensure browser is ready before getting state/creating plan
+                goal = message.get("prompt", "")  # Treat prompt as the goal
+                if goal:
+                    # Ensure browser is ready
                     if not agent.browser.page or agent.browser.page.is_closed():
                         logger.info(
-                            "Browser not initialized for planning, initializing...")
+                            "Browser not initialized, initializing...")
                         init_success = await agent.browser.initialize()
                         if not init_success:
-                            await websocket.send_json({"type": "error", "message": "Failed to initialize browser for planning."})
-                            continue  # Don't proceed if browser fails
+                            await websocket.send_json({"type": "error", "message": "Failed to initialize browser."})
+                            continue
 
-                    # Get initial page details for planning context
-                    logger.info("Getting initial page details for planning...")
-                    initial_page_details = await agent.browser.get_page_details()
-                    if not initial_page_details or not initial_page_details.get("success"):
-                        logger.warning(
-                            "Failed to get initial page state for planning. Proceeding without context.")
-                        initial_page_details = None  # Allow planning without context if details fail
-
-                    # Create plan using the initial state
-                    logger.info(f"Creating plan for task: {prompt}")
-                    # Pass initial details
-                    plan = await agent.create_plan(prompt, initial_page_details)
-
-                    if not plan:  # Handle case where plan creation itself fails
-                        logger.error("LLM failed to create a plan.")
-                        await websocket.send_json({"type": "error", "message": "Failed to create execution plan."})
-                        continue
-
-                    await websocket.send_json({"type": "plan_created", "plan": plan})
-
-                    # Start execution (browser should already be initialized from above)
-                    logger.info("Starting plan execution...")
-                    success = await agent.start_execution(plan, websocket)
+                    # Start execution with the goal
+                    logger.info(f"Starting execution for goal: {goal}")
+                    # Pass goal
+                    success = await agent.start_execution(goal, websocket)
 
                     if not success:
                         logger.error("Agent failed to start execution.")
 
             elif command == "resume":
                 await agent.resume_execution()
-                await websocket.send_json({"type": "status", "message": "Execution resumed"})
-
-            elif command == "skip_step":
-                await agent.skip_current_step()
-                await websocket.send_json({"type": "status", "message": "Step skipped"})
 
             elif command == "stop":
                 await agent.stop_execution()
-                await websocket.send_json({"type": "status", "message": "Execution stopped"})
 
             elif command == "close_browser":
                 await agent.browser.close()
-                agent.is_running = False
+                agent.is_running = False  # Ensure state reflects closure
                 await websocket.send_json({"type": "browser_closed", "message": "Browser closed"})
 
             elif command == "get_status":
                 status = {
                     "is_running": agent.is_running,
                     "is_paused": agent.is_paused,
-                    "current_step": agent.current_step_index if agent.current_plan else -1,
-                    "total_steps": len(agent.current_plan) if agent.current_plan else 0
+                    "goal": agent.goal,
+                    "completed_steps_count": len(agent.completed_steps)
                 }
                 await websocket.send_json({"type": "status_update", "status": status})
 

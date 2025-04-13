@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClosedManus - Metrics Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary-color: #0071e3;
+            --primary-hover: #0077ed;
+            --secondary-color: #86868b;
+            --bg-color: #f5f5f7;
+            --text-color: #1d1d1f;
+            --border-color: #d2d2d7;
+            --success-color: #29cc6a;
+            --error-color: #ff3b30;
+            --warning-color: #ff9500;
+            --card-bg: #ffffff;
+            --shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.5;
+        }
+
+        header {
+            text-align: center;
+            padding: 1.5rem 0;
+            background-color: var(--card-bg);
+            box-shadow: var(--shadow);
+            position: relative;
+            z-index: 10;
+        }
+
+        h1 {
+            color: var(--text-color);
+            font-weight: 500;
+            font-size: 1.8rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-title {
+            font-weight: 500;
+            color: var(--text-color);
+            font-size: 1.1rem;
+        }
+
+        .card-body {
+            padding: 1.5rem;
+        }
+
+        .metric-value {
+            font-size: 2.2rem;
+            font-weight: 600;
+            margin: 0.75rem 0;
+            color: var(--primary-color);
+        }
+
+        .metric-label {
+            font-size: 0.9rem;
+            color: var(--secondary-color);
+            margin-bottom: 0.25rem;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 200px;
+            width: 100%;
+        }
+
+        .metrics-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+
+        .metrics-table th,
+        .metrics-table td {
+            border-bottom: 1px solid var(--border-color);
+            padding: 0.75rem;
+            text-align: left;
+        }
+
+        .metrics-table th {
+            font-weight: 500;
+            color: var(--secondary-color);
+        }
+
+        .error-list {
+            list-style: none;
+            margin-top: 1rem;
+        }
+
+        .error-item {
+            background-color: rgba(255, 59, 48, 0.1);
+            border-left: 3px solid var(--error-color);
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            border-radius: 4px;
+        }
+
+        .error-time {
+            font-size: 0.8rem;
+            color: var(--secondary-color);
+            margin-bottom: 0.5rem;
+        }
+
+        .error-type {
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+        }
+
+        .error-message {
+            font-size: 0.9rem;
+        }
+
+        .nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+
+        .refresh-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.6rem 1.2rem;
+            border-radius: 8px;
+            border: none;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            background-color: var(--primary-color);
+            color: white;
+            transition: all 0.2s ease;
+        }
+
+        .refresh-btn:hover {
+            background-color: var(--primary-hover);
+        }
+
+        .refresh-time {
+            font-size: 0.9rem;
+            color: var(--secondary-color);
+        }
+
+        .success-rate-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            padding: 1.5rem;
+        }
+
+        .success-rate {
+            position: relative;
+            width: 150px;
+            height: 150px;
+        }
+
+        .success-rate-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>ClosedManus Metrics Dashboard</h1>
+    </header>
+
+    <div class="container">
+        <div class="nav">
+            <div>
+                <button id="refresh-btn" class="refresh-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-clockwise" viewBox="0 0 16 16" style="margin-right: 8px;">
+                        <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2z"/>
+                        <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466"/>
+                    </svg>
+                    Refresh Metrics
+                </button>
+            </div>
+            <div class="refresh-time" id="refresh-time">Last updated: Never</div>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">LLM Usage</div>
+                </div>
+                <div class="card-body">
+                    <div class="metric-label">Total API Calls</div>
+                    <div class="metric-value" id="llm-calls">-</div>
+
+                    <div class="metric-label">Estimated Tokens Used</div>
+                    <div class="metric-value" id="llm-tokens">-</div>
+
+                    <div class="metric-label">Average Response Time</div>
+                    <div class="metric-value" id="avg-response-time">-</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Action Performance</div>
+                </div>
+                <div class="card-body success-rate-container">
+                    <div class="success-rate">
+                        <canvas id="success-rate-chart"></canvas>
+                        <div class="success-rate-text" id="success-rate-text">-</div>
+                    </div>
+                    <div style="margin-top: 1rem;">
+                        <div class="metric-label">Total Actions</div>
+                        <div class="metric-value" id="total-actions">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Session Information</div>
+                </div>
+                <div class="card-body">
+                    <div class="metric-label">Session Duration</div>
+                    <div class="metric-value" id="session-duration">-</div>
+
+                    <div class="metric-label">Agent Status</div>
+                    <div class="metric-value" id="agent-status">-</div>
+
+                    <div class="metric-label">Current Goal</div>
+                    <div id="current-goal" style="margin-top: 0.5rem; font-style: italic;">-</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 2rem;">
+            <div class="card-header">
+                <div class="card-title">Response Time History</div>
+            </div>
+            <div class="card-body">
+                <div class="chart-container">
+                    <canvas id="response-time-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">Recent Errors</div>
+            </div>
+            <div class="card-body" id="error-container">
+                <p style="color: var(--secondary-color); font-style: italic;">No errors to display.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize charts
+        let successRateChart, responseTimeChart;
+
+        function initializeCharts() {
+            // Success rate chart (doughnut)
+            const successRateCtx = document.getElementById('success-rate-chart').getContext('2d');
+            successRateChart = new Chart(successRateCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Success', 'Failed'],
+                    datasets: [{
+                        data: [0, 0],
+                        backgroundColor: ['#29cc6a', '#ff3b30'],
+                        borderWidth: 0,
+                        cutout: '80%'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            enabled: true
+                        }
+                    }
+                }
+            });
+
+            // Response time history chart (line)
+            const responseTimeCtx = document.getElementById('response-time-chart').getContext('2d');
+            responseTimeChart = new Chart(responseTimeCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Response Time (ms)',
+                        data: [],
+                        borderColor: '#0071e3',
+                        backgroundColor: 'rgba(0, 113, 227, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Time (ms)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'API Call Index'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Format time duration
+        function formatDuration(seconds) {
+            if (seconds < 60) {
+                return `${Math.floor(seconds)} seconds`;
+            } else if (seconds < 3600) {
+                const minutes = Math.floor(seconds / 60);
+                return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+            } else {
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                return `${hours} hour${hours !== 1 ? 's' : ''}, ${minutes} minute${minutes !== 1 ? 's' : ''}`;
+            }
+        }
+
+        // Fetch metrics from API
+        async function fetchMetrics() {
+            try {
+                const [metricsResponse, statusResponse] = await Promise.all([
+                    fetch('/api/metrics'),
+                    fetch('/api/status')
+                ]);
+                
+                if (!metricsResponse.ok) throw new Error('Failed to fetch metrics');
+                if (!statusResponse.ok) throw new Error('Failed to fetch status');
+                
+                const metrics = await metricsResponse.json();
+                const status = await statusResponse.json();
+                
+                updateDashboard(metrics, status);
+                document.getElementById('refresh-time').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+            } catch (error) {
+                console.error('Error fetching metrics:', error);
+                document.getElementById('refresh-time').textContent = `Update failed: ${error.message}`;
+            }
+        }
+
+        // Update dashboard with fetched data
+        function updateDashboard(metrics, status) {
+            // LLM Usage
+            document.getElementById('llm-calls').textContent = metrics.metrics.llm_calls.toLocaleString();
+            document.getElementById('llm-tokens').textContent = Math.round(metrics.metrics.llm_tokens_used).toLocaleString();
+            document.getElementById('avg-response-time').textContent = `${Math.round(metrics.metrics.avg_response_time_ms)} ms`;
+            
+            // Action Performance
+            const totalActions = metrics.metrics.actions_executed;
+            const successfulActions = metrics.metrics.successful_actions;
+            const failedActions = metrics.metrics.failed_actions;
+            
+            document.getElementById('total-actions').textContent = totalActions;
+            
+            // Update success rate chart
+            if (successRateChart) {
+                successRateChart.data.datasets[0].data = [successfulActions, failedActions];
+                successRateChart.update();
+                
+                // Update success rate text
+                const successRate = totalActions > 0 ? (successfulActions / totalActions * 100).toFixed(0) : 0;
+                document.getElementById('success-rate-text').textContent = `${successRate}%`;
+            }
+            
+            // Update response time chart
+            if (responseTimeChart) {
+                const responseTimes = metrics.metrics.response_times;
+                responseTimeChart.data.labels = Array.from({length: responseTimes.length}, (_, i) => i + 1);
+                responseTimeChart.data.datasets[0].data = responseTimes;
+                responseTimeChart.update();
+            }
+            
+            // Session Information
+            document.getElementById('session-duration').textContent = formatDuration(metrics.session_duration_seconds);
+            
+            let statusText;
+            if (status.is_running) {
+                statusText = status.is_paused ? '⚠️ Paused' : '🔄 Running';
+            } else {
+                statusText = '⏹️ Stopped';
+            }
+            document.getElementById('agent-status').textContent = statusText;
+            
+            document.getElementById('current-goal').textContent = status.current_goal || 'No active goal';
+            
+            // Recent Errors
+            const errorContainer = document.getElementById('error-container');
+            if (metrics.recent_errors && metrics.recent_errors.length > 0) {
+                errorContainer.innerHTML = '<ul class="error-list">' +
+                    metrics.recent_errors.map(error => `
+                        <li class="error-item">
+                            <div class="error-time">${new Date(error.timestamp).toLocaleString()}</div>
+                            <div class="error-type">${error.error_type}</div>
+                            <div class="error-message">${error.error_message}</div>
+                        </li>
+                    `).join('') +
+                    '</ul>';
+            } else {
+                errorContainer.innerHTML = '<p style="color: var(--secondary-color); font-style: italic;">No errors to display.</p>';
+            }
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeCharts();
+            fetchMetrics();
+            
+            // Refresh button event listener
+            document.getElementById('refresh-btn').addEventListener('click', fetchMetrics);
+            
+            // Auto-refresh every 10 seconds
+            setInterval(fetchMetrics, 10000);
+        });
+    </script>
+</body>
+</html>
