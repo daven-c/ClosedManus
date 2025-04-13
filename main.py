@@ -129,6 +129,9 @@ async def websocket_endpoint(websocket: WebSocket):
             message = json.loads(data)
             command = message.get("command")
 
+            # Log received command
+            logger.info(f"Received command: {command} with data: {message}")
+
             # Handle ping
             if command == "ping":
                 await websocket.send_json({"type": "pong", "timestamp": time.time()})
@@ -180,9 +183,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.send_json({"type": "error", "message": "Internal server error: Agent is missing critical method."})
 
             elif command == "resume":
+                logger.info("Received resume command")
                 await agent.resume_execution()
 
             elif command == "stop":
+                logger.info("Received stop command")
                 await agent.stop_execution()
 
             elif command == "close_browser":
@@ -199,12 +204,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 }
                 await websocket.send_json({"type": "status_update", "status": status})
 
+            elif command == "user_input":  # Check if this command is received
+                user_message = message.get("message")
+                logger.info(f"Received user_input command with message: {user_message}")
+                if user_message:
+                    await agent.handle_user_input(user_message)
+                else:
+                    logger.warning("Received user_input command without a message.")
+                    await websocket.send_json({"type": "error", "message": "No message provided with user_input command."})
+
+            else:
+                logger.warning(f"Unknown command received: {command}")
+                await websocket.send_json({"type": "error", "message": f"Unknown command: {command}"})
+
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error: {e}", exc_info=True)
+        try:
+            # Attempt to inform the client about the error
+            await websocket.send_json({"type": "error", "message": f"Server error: {str(e)}"})
+        except Exception:
+            pass  # Ignore if sending fails (connection might be closed)
     finally:
-        # Clean up
         if connection_id in active_connections:
             del active_connections[connection_id]
         agent.websocket = None
