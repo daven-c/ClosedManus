@@ -191,67 +191,67 @@ class Browser:
 
         try:
             scan_script = """
-            function getSelectorPath(element) {
-                const path = [];
-                while (element && element.nodeType === Node.ELEMENT_NODE) {
-                    let selector = element.tagName.toLowerCase();
-                    
-                    if (element.id) {
-                        selector += '#' + CSS.escape(element.id);
+            (() => {
+                function getSelectorPath(element) {
+                    const path = [];
+                    while (element && element.nodeType === Node.ELEMENT_NODE) {
+                        let selector = element.tagName.toLowerCase();
+                        
+                        if (element.id) {
+                            selector += '#' + CSS.escape(element.id);
+                            path.unshift(selector);
+                            break;
+                        }
+                        
+                        let sibling = element;
+                        let nth = 1;
+                        while (sibling = sibling.previousElementSibling) {
+                            if (sibling.tagName === element.tagName) nth++;
+                        }
+                        
+                        if (nth > 1) {
+                            selector += `:nth-of-type(${nth})`;
+                        }
+                        
                         path.unshift(selector);
-                        break;
+                        element = element.parentElement;
                     }
                     
-                    let sibling = element;
-                    let nth = 1;
-                    while (sibling = sibling.previousElementSibling) {
-                        if (sibling.tagName === element.tagName) nth++;
-                    }
-                    
-                    if (nth > 1) {
-                        selector += `:nth-of-type(${nth})`;
-                    }
-                    
-                    path.unshift(selector);
-                    element = element.parentElement;
+                    return path.join(' > ');
                 }
-                
-                return path.join(' > ');
-            }
 
-            function getAdditionalAttributes(element) {
-                const attributes = {};
-                const importantAttrs = ['name', 'class', 'type', 'role', 'aria-label', 'placeholder', 'value', 'href', 'data-test-id'];
-                
-                for (const attr of importantAttrs) {
-                    if (element.hasAttribute(attr)) {
-                        attributes[attr] = element.getAttribute(attr);
+                function getAdditionalAttributes(element) {
+                    const attributes = {};
+                    const importantAttrs = ['name', 'class', 'type', 'role', 'aria-label', 'placeholder', 'value', 'href', 'data-test-id'];
+                    
+                    for (const attr of importantAttrs) {
+                        if (element.hasAttribute(attr)) {
+                            attributes[attr] = element.getAttribute(attr);
+                        }
                     }
+                    
+                    return attributes;
                 }
-                
-                return attributes;
-            }
 
-            function isElementVisible(element) {
-                if (!element.getBoundingClientRect) return false;
-                
-                const rect = element.getBoundingClientRect();
-                const style = window.getComputedStyle(element);
-                
-                return (
-                    style.display !== 'none' &&
-                    style.visibility !== 'hidden' &&
-                    style.opacity !== '0' &&
-                    rect.width > 0 &&
-                    rect.height > 0 &&
-                    rect.top < window.innerHeight &&
-                    rect.left < window.innerWidth &&
-                    rect.bottom > 0 &&
-                    rect.right > 0
-                );
-            }
+                function isElementVisible(element) {
+                    if (!element.getBoundingClientRect) return false;
+                    
+                    const rect = element.getBoundingClientRect();
+                    const style = window.getComputedStyle(element);
+                    
+                    return (
+                        style.display !== 'none' &&
+                        style.visibility !== 'hidden' &&
+                        style.opacity !== '0' &&
+                        rect.width > 0 &&
+                        rect.height > 0 &&
+                        rect.top < window.innerHeight &&
+                        rect.left < window.innerWidth &&
+                        rect.bottom > 0 &&
+                        rect.right > 0
+                    );
+                }
 
-            function scanActionableElements() {
                 const actionableElements = {
                     buttons: [],
                     links: [],
@@ -344,9 +344,7 @@ class Browser:
                         total: Object.values(actionableElements).reduce((sum, arr) => sum + arr.length, 0)
                     }
                 };
-            }
-            
-            return scanActionableElements();
+            })()
             """
 
             result = await self.page.evaluate(scan_script)
@@ -371,126 +369,128 @@ class Browser:
         try:
             # Execute JavaScript to detect common error patterns
             detection_script = """
-            function detectErrors() {
-                const results = {
-                    hasError: false,
-                    errorType: null,
-                    errorMessage: null,
-                    possibleRecoveryActions: []
-                };
-                
-                // Check for HTTP error codes in text
-                const errorCodes = ['400', '401', '403', '404', '500', '502', '503', '504'];
-                const pageText = document.body.innerText;
-                
-                for (const code of errorCodes) {
-                    if (
-                        pageText.includes(`Error ${code}`) || 
-                        pageText.includes(`${code} Error`) || 
-                        pageText.includes(`HTTP ${code}`)
-                    ) {
-                        results.hasError = true;
-                        results.errorType = 'http_error';
-                        results.errorMessage = `HTTP Error ${code} detected on page`;
-                        results.possibleRecoveryActions.push('reload_page');
-                        if (code === '401' || code === '403') {
-                            results.possibleRecoveryActions.push('check_authentication');
-                        }
-                    }
-                }
-                
-                // Check for connection errors
-                const connectionErrorPatterns = [
-                    'connection failed', 
-                    'cannot connect', 
-                    'network error',
-                    'failed to connect',
-                    'no internet',
-                    'offline',
-                    'could not reach',
-                    'ERR_CONNECTION'
-                ];
-                
-                for (const pattern of connectionErrorPatterns) {
-                    if (pageText.toLowerCase().includes(pattern.toLowerCase())) {
-                        results.hasError = true;
-                        results.errorType = 'connection_error';
-                        results.errorMessage = 'Connection error detected on page';
-                        results.possibleRecoveryActions.push('reload_page', 'wait_and_retry');
-                    }
-                }
-                
-                // Check for CAPTCHA or verification challenges
-                const captchaPatterns = [
-                    'captcha',
-                    'robot check',
-                    'human verification',
-                    'prove you are human',
-                    'security check',
-                    'automated access',
-                    'suspicious activity'
-                ];
-                
-                for (const pattern of captchaPatterns) {
-                    if (pageText.toLowerCase().includes(pattern.toLowerCase())) {
-                        results.hasError = true;
-                        results.errorType = 'captcha';
-                        results.errorMessage = 'CAPTCHA or verification challenge detected';
-                        results.possibleRecoveryActions.push('pause_for_user');
-                    }
-                }
-                
-                // Check for login walls or authentication challenges
-                const loginPatterns = [
-                    'please sign in',
-                    'please log in',
-                    'login required',
-                    'sign in to continue',
-                    'login to continue',
-                    'authentication required'
-                ];
-                
-                for (const pattern of loginPatterns) {
-                    if (pageText.toLowerCase().includes(pattern.toLowerCase()) &&
-                        (document.querySelector('input[type="password"]') || 
-                         document.querySelector('input[type="email"]') ||
-                         document.querySelector('input[name="username"]'))) {
-                        results.hasError = true;
-                        results.errorType = 'authentication_required';
-                        results.errorMessage = 'Login or authentication required';
-                        results.possibleRecoveryActions.push('authentication_flow');
-                    }
-                }
-                
-                // Check for popup/modal dialogs that might be blocking interaction
-                const modalElements = document.querySelectorAll('[role="dialog"], .modal, .popup, .overlay');
-                if (modalElements.length > 0) {
-                    for (const modal of modalElements) {
-                        if (window.getComputedStyle(modal).display !== 'none' && 
-                            window.getComputedStyle(modal).visibility !== 'hidden') {
+            (() => {
+                function detectErrors() {
+                    const results = {
+                        hasError: false,
+                        errorType: null,
+                        errorMessage: null,
+                        possibleRecoveryActions: []
+                    };
+                    
+                    // Check for HTTP error codes in text
+                    const errorCodes = ['400', '401', '403', '404', '500', '502', '503', '504'];
+                    const pageText = document.body.innerText;
+                    
+                    for (const code of errorCodes) {
+                        if (
+                            pageText.includes(`Error ${code}`) || 
+                            pageText.includes(`${code} Error`) || 
+                            pageText.includes(`HTTP ${code}`)
+                        ) {
                             results.hasError = true;
-                            results.errorType = 'modal_dialog';
-                            results.errorMessage = 'Modal dialog or popup detected';
-                            results.possibleRecoveryActions.push('dismiss_modal');
-                            
-                            // Check if it might be a cookie consent dialog
-                            const modalText = modal.innerText.toLowerCase();
-                            if (modalText.includes('cookie') || 
-                                modalText.includes('privacy') || 
-                                modalText.includes('consent') || 
-                                modalText.includes('accept')) {
-                                results.errorType = 'cookie_consent';
-                                results.errorMessage = 'Cookie consent dialog detected';
-                                results.possibleRecoveryActions.push('accept_cookies');
+                            results.errorType = 'http_error';
+                            results.errorMessage = `HTTP Error ${code} detected on page`;
+                            results.possibleRecoveryActions.push('reload_page');
+                            if (code === '401' || code === '403') {
+                                results.possibleRecoveryActions.push('check_authentication');
                             }
                         }
                     }
+                    
+                    // Check for connection errors
+                    const connectionErrorPatterns = [
+                        'connection failed', 
+                        'cannot connect', 
+                        'network error',
+                        'failed to connect',
+                        'no internet',
+                        'offline',
+                        'could not reach',
+                        'ERR_CONNECTION'
+                    ];
+                    
+                    for (const pattern of connectionErrorPatterns) {
+                        if (pageText.toLowerCase().includes(pattern.toLowerCase())) {
+                            results.hasError = true;
+                            results.errorType = 'connection_error';
+                            results.errorMessage = 'Connection error detected on page';
+                            results.possibleRecoveryActions.push('reload_page', 'wait_and_retry');
+                        }
+                    }
+                    
+                    // Check for CAPTCHA or verification challenges
+                    const captchaPatterns = [
+                        'captcha',
+                        'robot check',
+                        'human verification',
+                        'prove you are human',
+                        'security check',
+                        'automated access',
+                        'suspicious activity'
+                    ];
+                    
+                    for (const pattern of captchaPatterns) {
+                        if (pageText.toLowerCase().includes(pattern.toLowerCase())) {
+                            results.hasError = true;
+                            results.errorType = 'captcha';
+                            results.errorMessage = 'CAPTCHA or verification challenge detected';
+                            results.possibleRecoveryActions.push('pause_for_user');
+                        }
+                    }
+                    
+                    // Check for login walls or authentication challenges
+                    const loginPatterns = [
+                        'please sign in',
+                        'please log in',
+                        'login required',
+                        'sign in to continue',
+                        'login to continue',
+                        'authentication required'
+                    ];
+                    
+                    for (const pattern of loginPatterns) {
+                        if (pageText.toLowerCase().includes(pattern.toLowerCase()) &&
+                            (document.querySelector('input[type="password"]') || 
+                             document.querySelector('input[type="email"]') ||
+                             document.querySelector('input[name="username"]'))) {
+                            results.hasError = true;
+                            results.errorType = 'authentication_required';
+                            results.errorMessage = 'Login or authentication required';
+                            results.possibleRecoveryActions.push('authentication_flow');
+                        }
+                    }
+                    
+                    // Check for popup/modal dialogs that might be blocking interaction
+                    const modalElements = document.querySelectorAll('[role="dialog"], .modal, .popup, .overlay');
+                    if (modalElements.length > 0) {
+                        for (const modal of modalElements) {
+                            if (window.getComputedStyle(modal).display !== 'none' && 
+                                window.getComputedStyle(modal).visibility !== 'hidden') {
+                                results.hasError = true;
+                                results.errorType = 'modal_dialog';
+                                results.errorMessage = 'Modal dialog or popup detected';
+                                results.possibleRecoveryActions.push('dismiss_modal');
+                                
+                                // Check if it might be a cookie consent dialog
+                                const modalText = modal.innerText.toLowerCase();
+                                if (modalText.includes('cookie') || 
+                                    modalText.includes('privacy') || 
+                                    modalText.includes('consent') || 
+                                    modalText.includes('accept')) {
+                                    results.errorType = 'cookie_consent';
+                                    results.errorMessage = 'Cookie consent dialog detected';
+                                    results.possibleRecoveryActions.push('accept_cookies');
+                                }
+                            }
+                        }
+                    }
+                    
+                    return results;
                 }
                 
-                return results;
-            }
-            
-            return detectErrors();
+                return detectErrors();
+            })()
             """
 
             detection_result = await self.page.evaluate(detection_script)
@@ -525,48 +525,50 @@ class Browser:
                 logger.info("Recovery action: Attempting to dismiss modal")
                 # Try common dismiss methods
                 dismiss_script = """
-                function dismissModal() {
-                    // Try to find close buttons in dialogs
-                    const closeButtons = Array.from(document.querySelectorAll(
-                        '.close, .close-button, .dismiss, [aria-label="Close"], [aria-label="Dismiss"], button.btn-close'
-                    ));
-                    
-                    // Filter to only visible buttons
-                    const visibleCloseButtons = closeButtons.filter(btn => {
-                        const style = window.getComputedStyle(btn);
-                        return style.display !== 'none' && 
-                               style.visibility !== 'hidden' &&
-                               btn.offsetWidth > 0 &&
-                               btn.offsetHeight > 0;
-                    });
-                    
-                    if (visibleCloseButtons.length > 0) {
-                        visibleCloseButtons[0].click();
-                        return { clicked: true, element: 'close_button' };
+                (() => {
+                    function dismissModal() {
+                        // Try to find close buttons in dialogs
+                        const closeButtons = Array.from(document.querySelectorAll(
+                            '.close, .close-button, .dismiss, [aria-label="Close"], [aria-label="Dismiss"], button.btn-close'
+                        ));
+                        
+                        // Filter to only visible buttons
+                        const visibleCloseButtons = closeButtons.filter(btn => {
+                            const style = window.getComputedStyle(btn);
+                            return style.display !== 'none' && 
+                                   style.visibility !== 'hidden' &&
+                                   btn.offsetWidth > 0 &&
+                                   btn.offsetHeight > 0;
+                        });
+                        
+                        if (visibleCloseButtons.length > 0) {
+                            visibleCloseButtons[0].click();
+                            return { clicked: true, element: 'close_button' };
+                        }
+                        
+                        // Try to find and click an overlay backdrop
+                        const overlays = Array.from(document.querySelectorAll(
+                            '.modal-backdrop, .overlay, .dialog-backdrop'
+                        ));
+                        
+                        const visibleOverlays = overlays.filter(overlay => {
+                            const style = window.getComputedStyle(overlay);
+                            return style.display !== 'none' && 
+                                   style.visibility !== 'hidden';
+                        });
+                        
+                        if (visibleOverlays.length > 0) {
+                            visibleOverlays[0].click();
+                            return { clicked: true, element: 'overlay' };
+                        }
+                        
+                        // Try hitting Escape key as a last resort
+                        // (can't directly do this in JS, will need to use Playwright's keyboard)
+                        return { clicked: false, needsEscape: true };
                     }
                     
-                    // Try to find and click an overlay backdrop
-                    const overlays = Array.from(document.querySelectorAll(
-                        '.modal-backdrop, .overlay, .dialog-backdrop'
-                    ));
-                    
-                    const visibleOverlays = overlays.filter(overlay => {
-                        const style = window.getComputedStyle(overlay);
-                        return style.display !== 'none' && 
-                               style.visibility !== 'hidden';
-                    });
-                    
-                    if (visibleOverlays.length > 0) {
-                        visibleOverlays[0].click();
-                        return { clicked: true, element: 'overlay' };
-                    }
-                    
-                    // Try hitting Escape key as a last resort
-                    // (can't directly do this in JS, will need to use Playwright's keyboard)
-                    return { clicked: false, needsEscape: true };
-                }
-                
-                return dismissModal();
+                    return dismissModal();
+                })()
                 """
 
                 dismiss_result = await self.page.evaluate(dismiss_script)
@@ -582,55 +584,57 @@ class Browser:
                 logger.info("Recovery action: Attempting to accept cookies")
                 # Try to accept cookies by clicking common cookie consent buttons
                 cookie_script = """
-                function acceptCookies() {
-                    // Common cookie acceptance button texts
-                    const acceptPatterns = [
-                        'accept', 'agree', 'ok', 'got it', 'i understand', 
-                        'allow', 'continue', 'consent', 'allow all', 'accept all'
-                    ];
-                    
-                    // Try to find buttons with these texts
-                    for (const pattern of acceptPatterns) {
-                        // Look for buttons
-                        const buttons = Array.from(document.querySelectorAll('button')).filter(
-                            el => el.innerText.toLowerCase().includes(pattern)
-                        );
+                (() => {
+                    function acceptCookies() {
+                        // Common cookie acceptance button texts
+                        const acceptPatterns = [
+                            'accept', 'agree', 'ok', 'got it', 'i understand', 
+                            'allow', 'continue', 'consent', 'allow all', 'accept all'
+                        ];
                         
-                        // Also check for links and other clickable elements
-                        const links = Array.from(document.querySelectorAll('a')).filter(
-                            el => el.innerText.toLowerCase().includes(pattern)
-                        );
-                        
-                        const otherElements = Array.from(document.querySelectorAll(
-                            '[role="button"], .btn, .button'
-                        )).filter(
-                            el => el.innerText.toLowerCase().includes(pattern)
-                        );
-                        
-                        const allElements = [...buttons, ...links, ...otherElements];
-                        
-                        // Filter to only visible elements
-                        const visibleElements = allElements.filter(el => {
-                            const rect = el.getBoundingClientRect();
-                            const style = window.getComputedStyle(el);
-                            return style.display !== 'none' && 
-                                   style.visibility !== 'hidden' &&
-                                   rect.width > 0 &&
-                                   rect.height > 0 &&
-                                   rect.top > 0 &&
-                                   rect.top < window.innerHeight;
-                        });
-                        
-                        if (visibleElements.length > 0) {
-                            visibleElements[0].click();
-                            return { clicked: true, text: visibleElements[0].innerText, pattern: pattern };
+                        // Try to find buttons with these texts
+                        for (const pattern of acceptPatterns) {
+                            // Look for buttons
+                            const buttons = Array.from(document.querySelectorAll('button')).filter(
+                                el => el.innerText.toLowerCase().includes(pattern)
+                            );
+                            
+                            // Also check for links and other clickable elements
+                            const links = Array.from(document.querySelectorAll('a')).filter(
+                                el => el.innerText.toLowerCase().includes(pattern)
+                            );
+                            
+                            const otherElements = Array.from(document.querySelectorAll(
+                                '[role="button"], .btn, .button'
+                            )).filter(
+                                el => el.innerText.toLowerCase().includes(pattern)
+                            );
+                            
+                            const allElements = [...buttons, ...links, ...otherElements];
+                            
+                            // Filter to only visible elements
+                            const visibleElements = allElements.filter(el => {
+                                const rect = el.getBoundingClientRect();
+                                const style = window.getComputedStyle(el);
+                                return style.display !== 'none' && 
+                                       style.visibility !== 'hidden' &&
+                                       rect.width > 0 &&
+                                       rect.height > 0 &&
+                                       rect.top > 0 &&
+                                       rect.top < window.innerHeight;
+                            });
+                            
+                            if (visibleElements.length > 0) {
+                                visibleElements[0].click();
+                                return { clicked: true, text: visibleElements[0].innerText, pattern: pattern };
+                            }
                         }
+                        
+                        return { clicked: false };
                     }
                     
-                    return { clicked: false };
-                }
-                
-                return acceptCookies();
+                    return acceptCookies();
+                })()
                 """
 
                 cookie_result = await self.page.evaluate(cookie_script)

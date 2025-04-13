@@ -137,6 +137,23 @@ async def websocket_endpoint(websocket: WebSocket):
             # Process commands
             if command == "execute":
                 goal = message.get("prompt", "")  # Treat prompt as the goal
+                
+                # Clean up the goal text - remove any log lines or excessive whitespace
+                if goal and len(goal) > 200:  # If goal is suspiciously long
+                    logger.warning(f"Goal text is very long ({len(goal)} chars), might be log paste. Attempting to extract actual goal.")
+                    # Look for common goal text patterns
+                    import re
+                    goal_matches = re.findall(r'find the distance between .*', goal, re.IGNORECASE)
+                    if goal_matches:
+                        goal = goal_matches[0].strip()
+                        logger.info(f"Extracted goal: {goal}")
+                    else:
+                        # Try to extract last line if it's reasonably short
+                        lines = [line.strip() for line in goal.split('\n') if line.strip()]
+                        if lines and len(lines[-1]) < 200:
+                            goal = lines[-1]
+                            logger.info(f"Using last line as goal: {goal}")
+                
                 if goal:
                     # Ensure browser is ready
                     if not agent.browser.page or agent.browser.page.is_closed():
@@ -148,12 +165,19 @@ async def websocket_endpoint(websocket: WebSocket):
                             continue
 
                     # Start execution with the goal
-                    logger.info(f"Starting execution for goal: {goal}")
-                    # Pass goal
-                    success = await agent.start_execution(goal, websocket)
-
-                    if not success:
-                        logger.error("Agent failed to start execution.")
+                    logger.info(f"Attempting to start execution for goal: {goal}")
+                    # --- Debugging Log ---
+                    logger.info(f"Agent object type: {type(agent)}")
+                    logger.info(f"Agent object has 'start_execution' method: {hasattr(agent, 'start_execution')}")
+                    # --- End Debugging Log ---
+                    if hasattr(agent, 'start_execution'):
+                        success = await agent.start_execution(goal, websocket)
+                        if not success:
+                            logger.error("Agent failed to start execution.")
+                            await websocket.send_json({"type": "error", "message": "Agent failed to start execution."})
+                    else:
+                        logger.error("Agent object does NOT have 'start_execution' method at time of call.")
+                        await websocket.send_json({"type": "error", "message": "Internal server error: Agent is missing critical method."})
 
             elif command == "resume":
                 await agent.resume_execution()

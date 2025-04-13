@@ -96,7 +96,7 @@ class LLMService:
             CURRENT WEB PAGE STATE:
             URL: {state.get("url", "unknown")}
             TITLE: {state.get("title", "unknown")}
-            CONTENT EXCERPT (first 1500 chars): {state.get("content", "")[:1500]}
+            CONTENT EXCERPT: {state.get("content", "")}
 
             Focus on actionable steps from the current state.
             Return ONLY a JSON array of strings representing the steps.
@@ -156,7 +156,7 @@ class LLMService:
             CURRENT WEB PAGE STATE:
             URL: {state.get('url')}
             TITLE: {state.get('title')}
-            CONTENT (first 1500 chars): {state.get('content', '')[:1500]}
+            CONTENT: {state.get('content', '')}
 
             Choose ONE action from: navigate, click, type, wait, complete.
             - 'navigate': Provide the URL in 'value'.
@@ -246,7 +246,7 @@ class LLMService:
             CURRENT WEB PAGE STATE:
             URL: {state.get("url", "unknown")}
             TITLE: {state.get("title", "unknown")}
-            CONTENT EXCERPT (first 1500 chars): {state.get("content", "")[:1500]}
+            CONTENT EXCERPT: {state.get("content", "")}
 
             Based on the current page state, and considering the previous error (if any), create a revised, concise step-by-step plan (2-5 steps) to achieve the goal of the *remaining original steps*, starting from the current page. The plan should attempt to recover from the error if possible (e.g., by finding an alternative element, waiting longer, or trying a different approach).
             Focus on actionable steps from the current state.
