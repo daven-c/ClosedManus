@@ -142,20 +142,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 goal = message.get("prompt", "")  # Treat prompt as the goal
                 
                 # Clean up the goal text - remove any log lines or excessive whitespace
-                if goal and len(goal) > 200:  # If goal is suspiciously long
-                    logger.warning(f"Goal text is very long ({len(goal)} chars), might be log paste. Attempting to extract actual goal.")
-                    # Look for common goal text patterns
-                    import re
-                    goal_matches = re.findall(r'find the distance between .*', goal, re.IGNORECASE)
-                    if goal_matches:
-                        goal = goal_matches[0].strip()
-                        logger.info(f"Extracted goal: {goal}")
-                    else:
-                        # Try to extract last line if it's reasonably short
-                        lines = [line.strip() for line in goal.split('\n') if line.strip()]
-                        if lines and len(lines[-1]) < 200:
-                            goal = lines[-1]
-                            logger.info(f"Using last line as goal: {goal}")
+                goal = f"Navigate to {goal} and search for open internship positions. You may need to search through all the current job openings and go through multiple pages of job listings. If there are no internship openings then tell me that there are no openings. Internship positions are usually listed as 'Internship' or 'Intern'."
                 
                 if goal:
                     # Ensure browser is ready

@@ -132,6 +132,10 @@ class Agent:
             url = page_details.get('url', 'unknown')
             title = page_details.get('title', 'unknown')
 
+            if len(html_content) > 30000:
+                html_content = html_content[:30000]
+                logger.warning("HTML content truncated for analysis.")
+
             # First, scan for available elements
             scan_result = await self.browser.scan_actionable_elements()
             available_elements = scan_result.get(
@@ -150,7 +154,8 @@ class Agent:
             prompt = f"""
             You are a meticulous web automation expert. Your task is to analyze the current page state and determine the *precise* action needed for the current step, ensuring progress towards the overall goal. Prioritize asking the user if information is unclear. Be thorough.
 
-            OVERALL GOAL: {self.goal}
+            OVERALL GOAL: 
+            {self.goal}
 
             CONVERSATION HISTORY:
             {formatted_history}
@@ -169,7 +174,7 @@ class Agent:
 
             HTML CONTENT (up to 18000 chars):
             ```html
-            {html_content[:30000]}
+            {html_content}
             ```
 
             IMPORTANT - THOROUGH EXECUTION:
