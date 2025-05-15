@@ -119,7 +119,7 @@ class Browser:
             return {"success": False, "message": f"Error getting content: {e}"}
 
     async def get_page_details(self) -> Dict[str, Any]:
-        """Get current page details including URL, title, and condensed HTML content with interactables."""
+        """Get current page details including URL, title, condensed HTML content with interactables, and screenshot."""
         if not self.page or self.page.is_closed():
             return {"success": False, "message": "Browser not initialized or page closed"}
 
@@ -132,6 +132,23 @@ class Browser:
                 logger.debug(
                     f"Networkidle wait timed out or failed: {wait_error}. Proceeding anyway.")
                 await asyncio.sleep(0.5)  # Fallback short sleep
+
+            # Capture screenshot first
+            screenshot_result = None
+            try:
+                screenshot_bytes = await self.page.screenshot(type="jpeg", quality=75)
+                import base64
+                screenshot_result = {
+                    "success": True,
+                    "screenshot": f"data:image/jpeg;base64,{base64.b64encode(screenshot_bytes).decode('utf-8')}"
+                }
+                logger.debug("Screenshot captured successfully.")
+            except Exception as screenshot_error:
+                logger.warning(f"Failed to capture screenshot: {screenshot_error}")
+                screenshot_result = {
+                    "success": False,
+                    "message": f"Screenshot capture failed: {str(screenshot_error)}"
+                }
 
             url = self.page.url
             title = await self.page.title()
@@ -209,7 +226,9 @@ class Browser:
                 # Return the condensed representation instead of raw HTML
                 "condensed_content": condensed_content_str,
                 "original_html_length": original_length,  # Keep for info
-                "condensed_content_length": condensed_length  # Keep for info
+                "condensed_content_length": condensed_length,  # Keep for info
+                "screenshot": screenshot_result.get("screenshot") if screenshot_result and screenshot_result.get("success") else None,
+                "screenshot_error": screenshot_result.get("message") if screenshot_result and not screenshot_result.get("success") else None
             }
         except Exception as e:
             logger.error(f"Error getting page details: {e}", exc_info=True)

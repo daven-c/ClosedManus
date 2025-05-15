@@ -73,12 +73,14 @@ class Agent:
 
         if page_details.get("success"):
             logger.info("Successfully fetched page content.")
-            # Return relevant details, including HTML
+            # Return relevant details, including HTML and screenshot
             return {
                 "success": True,
                 "url": page_details.get("url"),
                 "title": page_details.get("title"),
-                "html_content": page_details.get("html_content"),
+                "html_content": page_details.get("condensed_content"),  # Updated to use condensed_content
+                "screenshot": page_details.get("screenshot"),  # Add screenshot
+                "screenshot_error": page_details.get("screenshot_error"),  # Add any screenshot errors
                 "message": "Page content fetched successfully."
             }
         else:
@@ -131,7 +133,15 @@ class Agent:
             html_content = page_details.get('html_content', '')
             url = page_details.get('url', 'unknown')
             title = page_details.get('title', 'unknown')
-
+            screenshot = page_details.get('screenshot')
+            screenshot_error = page_details.get('screenshot_error')
+            #save screenshot to file
+            if screenshot:
+                screenshot_path = f"screenshots/screenshot_{int(time.time())}.png"
+                with open(screenshot_path, "wb") as f:
+                    f.write(screenshot)
+                logger.info(f"Screenshot saved to {screenshot_path}")
+                
             # First, scan for available elements
             scan_result = await self.browser.scan_actionable_elements()
             available_elements = scan_result.get(
@@ -147,8 +157,21 @@ class Agent:
             formatted_history = "\n".join(
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
 
+            # Add screenshot information to the prompt
+            screenshot_section = ""
+            if screenshot:
+                screenshot_section = f"""
+                CURRENT PAGE SCREENSHOT:
+                {screenshot}
+                """
+            elif screenshot_error:
+                screenshot_section = f"""
+                SCREENSHOT ERROR:
+                {screenshot_error}
+                """
+
             prompt = f"""
-            You are a meticulous web automation expert. Your task is to analyze the current page state and determine the *precise* action needed for the current step, ensuring progress towards the overall goal. Prioritize asking the user if information is unclear. Be thorough.
+            You are a meticulous web automation expert. Your task is to analyze the current page state and determine the *precise* action needed for the current step, ensuring progress towards the overall goal. Prioritize inferring details. Only ask the user when absolutely necessary. Be thorough.
 
             OVERALL GOAL: {self.goal}
 
@@ -163,6 +186,7 @@ class Agent:
             CURRENT PAGE STATE:
             URL: {url}
             TITLE: {title}
+            {screenshot_section}
 
             AVAILABLE ELEMENTS ON PAGE:
             {json.dumps(available_elements, indent=2)}
@@ -173,7 +197,7 @@ class Agent:
             ```
 
             IMPORTANT - THOROUGH EXECUTION:
-            1.  **Verify Current State vs. Step:** Does the CURRENT PAGE STATE match the prerequisite for the STEP TO EXECUTE? (e.g., If the step is 'Click search results link', are you actually on a search results page? If not, determine the action needed to *get* to that state first, like performing the search).
+            1.  **Verify Current State vs. Step:** Does the CURRENT PAGE STATE match the prerequisite for the STEP TO EXECUTE? (e.g., If the step is 'Click search results link', are you actually on a search results page? If not, determine the action needed to *get* to that state first, like performing the search). Use both the visual screenshot and HTML content to verify the state.
             2.  **Use Available Elements:** Check AVAILABLE ELEMENTS before suggesting actions. Use these elements whenever possible. Prefer specific locators (like IDs or unique attributes) if available.
             3.  **Ask if Unsure:** If the step requires *any* information not immediately clear from the page or history (credentials, choices, confirmation), set `action_type` to "ask_user". Err on the side of asking.
             4.  **Search Logic:**
@@ -182,10 +206,11 @@ class Agent:
             5.  **Link Exploration:** If the step involves finding information, examine AVAILABLE ELEMENTS and HTML for relevant links (`<a>` tags). If a link seems promising, suggest a "click" action.
             6.  **Information Extraction:** If the step is to "Extract information X", use the "complete" action type and put the extracted information in the "value" field. If the information isn't present, determine the next action (e.g., click a link, ask user) or report failure if truly stuck.
             7.  **Completion:** Only use `action_type: "complete"` if the *specific* `STEP TO EXECUTE` is fully achieved by the current state (e.g., information is found and ready to be returned) OR if the step explicitly involves extracting information found on the current page. Do not use "complete" just because an action was performed; the loop handles step progression.
+            8.  **Visual Verification:** If a screenshot is available, use it to verify that elements are actually visible and the page is in the expected state before suggesting actions.
 
             Return ONLY a JSON object:
             {{
-                "action_type": "navigate|click|type|wait|javascript|complete|ask_user",
+                "action_type": "navigate|click|type|wait|javascript|complete|ask_user (do not use any other values)",
                 "selector": "CSS selector or Playwright locator (null if ask_user, javascript, navigate, wait, complete)",
                 "locator_strategy": "css|xpath|text|role|get_by_role|get_by_label (null if ask_user, javascript, navigate, wait, complete)",
                 "locator_args": {{}}, # e.g., {{"role": "button", "name": "Google Search"}} for get_by_role
@@ -264,6 +289,8 @@ class Agent:
             html_content = final_page_details.get("html_content", "")
             url = final_page_details.get("url", "unknown")
             title = final_page_details.get("title", "unknown")
+            screenshot = final_page_details.get("screenshot")
+            screenshot_error = final_page_details.get("screenshot_error")
 
             MAX_ANSWER_HTML_LENGTH = 25000  # Increased slightly
             prompt_html_content = html_content[:MAX_ANSWER_HTML_LENGTH] if len(
@@ -273,6 +300,19 @@ class Agent:
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
             completed_steps_str = "\n".join(
                 f"- {s}" for s in self.completed_steps)
+
+            # Add screenshot information to the prompt
+            screenshot_section = ""
+            if screenshot:
+                screenshot_section = f"""
+                FINAL PAGE SCREENSHOT:
+                {screenshot}
+                """
+            elif screenshot_error:
+                screenshot_section = f"""
+                SCREENSHOT ERROR:
+                {screenshot_error}
+                """
 
             prompt = f"""
             You are a web data extraction assistant. Based on the original goal, the *entire* conversation history, all completed steps, and the final state of the web page, extract the specific answer requested or summarize the outcome.
@@ -288,6 +328,8 @@ class Agent:
             FINAL PAGE STATE:
             URL: {url}
             TITLE: {title}
+            {screenshot_section}
+
             HTML CONTENT EXCERPT (up to {MAX_ANSWER_HTML_LENGTH} chars):
             ```html
             {prompt_html_content}
@@ -295,11 +337,12 @@ class Agent:
 
             INSTRUCTIONS:
             1.  Carefully review the ORIGINAL GOAL, FULL CONVERSATION HISTORY, and COMPLETED STEPS HISTORY to understand the *complete context* and what information or final state was expected.
-            2.  Analyze the FINAL PAGE STATE (HTML, URL, Title) to find the information or confirm the state relevant to the goal.
-            3.  Extract the specific piece of information requested by the goal, if applicable and present on the page.
-            4.  If the goal was an action (e.g., "book a flight", "submit form"), confirm if the final page state indicates successful completion.
-            5.  If the information cannot be found or the goal state wasn't reached, state that clearly in the 'answer' field and set 'success' to false. Explain *why* based on the final page content and history.
-            6.  Provide detailed reasoning in the 'thought' field, referencing the goal, history, and final page content.
+            2.  Analyze the FINAL PAGE STATE (HTML, Screenshot, URL, Title) to find the information or confirm the state relevant to the goal.
+            3.  Use both the visual screenshot (if available) and HTML content to verify the final state and extract information.
+            4.  Extract the specific piece of information requested by the goal, if applicable and present on the page.
+            5.  If the goal was an action (e.g., "book a flight", "submit form"), confirm if the final page state indicates successful completion.
+            6.  If the information cannot be found or the goal state wasn't reached, state that clearly in the 'answer' field and set 'success' to false. Explain *why* based on the final page content, screenshot, and history.
+            7.  Provide detailed reasoning in the 'thought' field, referencing the goal, history, and final page content.
 
             Return ONLY a JSON object:
             ```json
