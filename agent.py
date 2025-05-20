@@ -3,6 +3,7 @@ import json
 import time
 import asyncio
 import base64
+import PIL.Image
 from typing import List, Dict, Any, Optional
 import google.generativeai as genai
 from playwright.async_api import async_playwright
@@ -15,6 +16,25 @@ logger = logging.getLogger("web_automation")
 # --- Dedicated logger for agent thoughts ---
 agent_thoughts_logger = logging.getLogger("agent_thoughts")
 agent_thoughts_logger.setLevel(logging.DEBUG)  # Log all thoughts
+
+# Logger for gemini prompts
+prompt_logger = logging.getLogger("gemini_prompt")
+prompt_logger.setLevel(logging.DEBUG)  # Log all prompts
+
+# Prevent prompt logs from propagating to the root logger/console
+prompt_logger.propagate = False
+
+# Create file handler for prompts.log
+try:
+    prompt_fh = logging.FileHandler("prompts.log", mode='a', encoding='utf-8')
+    prompt_fh.setLevel(logging.DEBUG)
+    prompt_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    prompt_fh.setFormatter(prompt_formatter)
+    if not prompt_logger.hasHandlers():  # Avoid adding multiple handlers on reload
+        prompt_logger.addHandler(prompt_fh)
+except Exception as e:
+    logger.error(f"Failed to set up prompt_logger: {e}")
+
 # Prevent thoughts from propagating to the root logger/console
 agent_thoughts_logger.propagate = False
 # Create file handler
@@ -131,23 +151,19 @@ class Agent:
             return {"success": False, "message": "LLM not initialized"}
 
         try:
-            html_content = page_details.get('condensed_content')
+            html_content = page_details.get('condensed_content', '')
             url = page_details.get('url')
             title = page_details.get('title')
             screenshot = page_details.get('screenshot')
             screenshot_error = page_details.get('screenshot_error')
             #save screenshot to file
             if screenshot:
-                screenshot_path = f"screenshots/screenshot_{int(time.time())}.jpeg"
-                # Remove the data URL prefix if present
-                if screenshot.startswith("data:image"):
-                    base64_data = screenshot.split(",", 1)[1]
-                else:
-                    base64_data = screenshot
-                with open(screenshot_path, "wb") as f:
-                    f.write(base64.b64decode(base64_data))
-                logger.info(f"Screenshot saved to {screenshot_path}")
-                
+                try:
+                    screenshot = PIL.Image.open(screenshot)
+                except Exception as e:
+                    screenshot = None
+                    logger.error(f"Failed to open screenshot: {screenshot}")
+
             # First, scan for available elements
             scan_result = await self.browser.scan_actionable_elements()
             available_elements = scan_result.get(
@@ -162,19 +178,6 @@ class Agent:
 
             formatted_history = "\n".join(
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
-
-            # Add screenshot information to the prompt
-            screenshot_section = ""
-            if screenshot:
-                screenshot_section = f"""
-                CURRENT PAGE SCREENSHOT:
-                {screenshot}
-                """
-            elif screenshot_error:
-                screenshot_section = f"""
-                SCREENSHOT ERROR:
-                {screenshot_error}
-                """
 
             prompt = f"""
             You are a meticulous web automation expert. Your task is to analyze the current page state and determine the *precise* action needed for the current step, ensuring progress towards the overall goal. Prioritize inferring details. Only ask the user when absolutely necessary. Be thorough.
@@ -192,7 +195,6 @@ class Agent:
             CURRENT PAGE STATE:
             URL: {url}
             TITLE: {title}
-            {screenshot_section}
 
             AVAILABLE ELEMENTS ON PAGE:
             {json.dumps(available_elements, indent=2)}
@@ -208,11 +210,11 @@ class Agent:
             3.  **Ask if Unsure:** If the step requires *any* information not immediately clear from the page or history (credentials, choices, confirmation), set `action_type` to "ask_user". Err on the side of asking.
             4.  **Search Logic:**
                 *   If the step is to search, and the query hasn't been typed, use "type".
-                *   If the query *was* typed (check history), and the step is to submit, use "click" on the search button or simulate Enter if appropriate.
+                *   If the query *was* typed (check history), and the step is to submit, simulate pressing Enter or use the "click" action_type on the search button as appropriate.
             5.  **Link Exploration:** If the step involves finding information, examine AVAILABLE ELEMENTS and HTML for relevant links (`<a>` tags). If a link seems promising, suggest a "click" action.
             6.  **Information Extraction:** If the step is to "Extract information X", use the "complete" action type and put the extracted information in the "value" field. If the information isn't present, determine the next action (e.g., click a link, ask user) or report failure if truly stuck.
             7.  **Completion:** Only use `action_type: "complete"` if the *specific* `STEP TO EXECUTE` is fully achieved by the current state (e.g., information is found and ready to be returned) OR if the step explicitly involves extracting information found on the current page. Do not use "complete" just because an action was performed; the loop handles step progression.
-            8.  **Visual Verification:** If a screenshot is available, use it to verify that elements are actually visible and the page is in the expected state before suggesting actions.
+            8.  **Visual Verification:** If a screenshot image is available, use it to verify that elements are actually visible and the page is in the expected state before suggesting actions.
 
             Return ONLY a JSON object:
             {{
@@ -226,6 +228,12 @@ class Agent:
                 "thought": "Your reasoning process: Verify state, check history, consider alternatives, select best action for the *specific* step."
             }}
             """
+
+            # Add screenshot information to the prompt
+            if screenshot:
+                prompt = [screenshot, prompt]
+
+            prompt_logger.info(f"Analyze state for {step}:\n{prompt}")
 
             response = await asyncio.to_thread(
                 self.gemini_model.generate_content,
@@ -286,17 +294,18 @@ class Agent:
             logger.error(f"Error analyzing state: {e}", exc_info=True)
             return {"success": False, "message": f"Analysis error: {str(e)}"}
 
-    async def extract_final_answer(self, goal: str, final_page_details: Dict[str, Any]) -> Dict[str, Any]:
+    async def extract_final_answer(self, goal: str, final_page_details: Dict[str, Any], final_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Extracts the final answer from the page based on the original goal."""
         if not self.gemini_model:
             return {"success": False, "message": "LLM not initialized"}
 
         try:
-            html_content = final_page_details.get("html_content", "")
+            html_content = final_page_details.get("condensed_content", "")
             url = final_page_details.get("url", "unknown")
             title = final_page_details.get("title", "unknown")
             screenshot = final_page_details.get("screenshot")
             screenshot_error = final_page_details.get("screenshot_error")
+            value = final_analysis.get("value", "")
 
             MAX_ANSWER_HTML_LENGTH = 25000  # Increased slightly
             prompt_html_content = html_content[:MAX_ANSWER_HTML_LENGTH] if len(
@@ -306,22 +315,16 @@ class Agent:
                 [f"{msg['role'].capitalize()}: {msg['content']}" for msg in self.conversation_history])
             completed_steps_str = "\n".join(
                 f"- {s}" for s in self.completed_steps)
-
-            # Add screenshot information to the prompt
-            screenshot_section = ""
+            
             if screenshot:
-                screenshot_section = f"""
-                FINAL PAGE SCREENSHOT:
-                {screenshot}
-                """
-            elif screenshot_error:
-                screenshot_section = f"""
-                SCREENSHOT ERROR:
-                {screenshot_error}
-                """
+                try:
+                    screenshot = PIL.Image.open(screenshot)
+                except Exception as e:
+                    screenshot = None
+                    logger.error(f"Failed to open screenshot: {screenshot}")
 
             prompt = f"""
-            You are a web data extraction assistant. Based on the original goal, the *entire* conversation history, all completed steps, and the final state of the web page, extract the specific answer requested or summarize the outcome.
+            You are a web data extraction assistant. Based on the original goal, the *entire* conversation history, all completed steps, final analysis, and the final state of the web page, extract the specific answer requested or summarize the outcome.
 
             ORIGINAL GOAL: {goal}
 
@@ -331,10 +334,12 @@ class Agent:
             COMPLETED STEPS HISTORY:
             {completed_steps_str}
 
+            FINAL ANALYSIS:
+            {value}
+
             FINAL PAGE STATE:
             URL: {url}
             TITLE: {title}
-            {screenshot_section}
 
             HTML CONTENT EXCERPT (up to {MAX_ANSWER_HTML_LENGTH} chars):
             ```html
@@ -343,7 +348,7 @@ class Agent:
 
             INSTRUCTIONS:
             1.  Carefully review the ORIGINAL GOAL, FULL CONVERSATION HISTORY, and COMPLETED STEPS HISTORY to understand the *complete context* and what information or final state was expected.
-            2.  Analyze the FINAL PAGE STATE (HTML, Screenshot, URL, Title) to find the information or confirm the state relevant to the goal.
+            2.  Analyze the FINAL ANALYSIS and FINAL PAGE STATE (HTML, Screenshot, URL, Title) to find the information or confirm the state relevant to the goal.
             3.  Use both the visual screenshot (if available) and HTML content to verify the final state and extract information.
             4.  Extract the specific piece of information requested by the goal, if applicable and present on the page.
             5.  If the goal was an action (e.g., "book a flight", "submit form"), confirm if the final page state indicates successful completion.
@@ -358,6 +363,13 @@ class Agent:
               "thought": "Your detailed reasoning for finding (or not finding) the answer/confirming completion based on all available context and the final page."
             }}
             """
+
+            # Add screenshot information to the prompt
+            if screenshot:
+                prompt = [screenshot, prompt]                
+
+            prompt_logger.info(f"Extract final answer prompt:\n{prompt}")
+
             response = await asyncio.to_thread(
                 self.gemini_model.generate_content,
                 prompt,
@@ -491,7 +503,7 @@ class Agent:
             if self.is_running and final_page_details:
                 logger.info(
                     "Execution loop finished (goal met). Attempting to extract final answer.")
-                answer_result = await self.extract_final_answer(self.goal, final_page_details)
+                answer_result = await self.extract_final_answer(self.goal, final_page_details, analysis)
 
                 final_message = "No specific answer extracted."
                 if answer_result.get("success") and answer_result.get("answer"):
@@ -770,6 +782,9 @@ class Agent:
                 "thought": "Your detailed reasoning: Analyzed history, checked current state vs expected state, identified next logical action towards the goal, considered alternatives, ensured task breakdown."
             }}
             """
+
+            prompt_logger.info(f"Plan next step prompt:\n{prompt}")
+
             response = await asyncio.to_thread(
                 self.gemini_model.generate_content,
                 prompt,
@@ -863,6 +878,9 @@ class Agent:
                 "reason": "Your detailed reasoning explaining *why* the goal is considered fully achieved or not, referencing the goal, history, and current page state."
             }}
             """
+
+            prompt_logger.info(f"Check goal completion prompt:\n{prompt}")
+
             response = await asyncio.to_thread(
                 self.gemini_model.generate_content,
                 prompt,

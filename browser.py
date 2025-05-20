@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from typing import Dict, Any, List
+import time
 from playwright.async_api import async_playwright, Page
 from bs4 import BeautifulSoup  # Import BeautifulSoup
 
@@ -135,14 +136,18 @@ class Browser:
 
             # Capture screenshot first
             screenshot_result = None
+            screenshot_path = f"screenshots/screenshot_{int(time.time())}.jpeg"
             try:
                 screenshot_bytes = await self.page.screenshot(type="jpeg", quality=75, full_page=True)
-                import base64
+                
+                with open(screenshot_path, "wb") as f:
+                    f.write(screenshot_bytes)
+                
+                logger.info(f"Screenshot saved to {screenshot_path}")
                 screenshot_result = {
                     "success": True,
-                    "screenshot": f"data:image/jpeg;base64,{base64.b64encode(screenshot_bytes).decode('utf-8')}"
+                    "screenshot": screenshot_path,
                 }
-                logger.debug("Screenshot captured successfully.")
             except Exception as screenshot_error:
                 logger.warning(f"Failed to capture screenshot: {screenshot_error}")
                 screenshot_result = {
@@ -203,7 +208,7 @@ class Browser:
 
             # Create the condensed representation string (JSON-like)
             # Limit the number of elements to prevent excessive length even after condensation
-            MAX_CONDENSED_ELEMENTS = 500
+            MAX_CONDENSED_ELEMENTS = 1000
             if len(condensed_elements) > MAX_CONDENSED_ELEMENTS:
                 logger.warning(
                     f"Condensed elements ({len(condensed_elements)}) exceed limit ({MAX_CONDENSED_ELEMENTS}), truncating.")
