@@ -136,7 +136,7 @@ class Browser:
             # Capture screenshot first
             screenshot_result = None
             try:
-                screenshot_bytes = await self.page.screenshot(type="jpeg", quality=75)
+                screenshot_bytes = await self.page.screenshot(type="jpeg", quality=75, full_page=True)
                 import base64
                 screenshot_result = {
                     "success": True,
@@ -154,7 +154,7 @@ class Browser:
             title = await self.page.title()
             raw_html_content = await self.page.content()
             original_length = len(raw_html_content)
-            logger.debug(f"Raw HTML Length: {original_length}")
+            logger.info(f"Raw HTML Length: {original_length} divide by 4 for token count. Max token is 1,048,576")
 
             # --- HTML Condensation using BeautifulSoup ---
             soup = BeautifulSoup(raw_html_content, 'lxml')

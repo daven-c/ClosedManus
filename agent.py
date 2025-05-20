@@ -2,6 +2,7 @@ import logging
 import json
 import time
 import asyncio
+import base64
 from typing import List, Dict, Any, Optional
 import google.generativeai as genai
 from playwright.async_api import async_playwright
@@ -130,16 +131,21 @@ class Agent:
             return {"success": False, "message": "LLM not initialized"}
 
         try:
-            html_content = page_details.get('html_content', '')
-            url = page_details.get('url', 'unknown')
-            title = page_details.get('title', 'unknown')
+            html_content = page_details.get('condensed_content')
+            url = page_details.get('url')
+            title = page_details.get('title')
             screenshot = page_details.get('screenshot')
             screenshot_error = page_details.get('screenshot_error')
             #save screenshot to file
             if screenshot:
-                screenshot_path = f"screenshots/screenshot_{int(time.time())}.png"
+                screenshot_path = f"screenshots/screenshot_{int(time.time())}.jpeg"
+                # Remove the data URL prefix if present
+                if screenshot.startswith("data:image"):
+                    base64_data = screenshot.split(",", 1)[1]
+                else:
+                    base64_data = screenshot
                 with open(screenshot_path, "wb") as f:
-                    f.write(screenshot)
+                    f.write(base64.b64decode(base64_data))
                 logger.info(f"Screenshot saved to {screenshot_path}")
                 
             # First, scan for available elements
