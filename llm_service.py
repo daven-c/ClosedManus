@@ -173,7 +173,12 @@ class LLMService:
                 "explanation": "Brief justification for choosing this action and selector/value based on the step and VISIBLE page elements."
             }}
             """
-
+            token_count = await asyncio.to_thread(
+                self.gemini_model.get_token_count(),
+                prompt,
+            )
+            logger.info(f"Token count for prompt: {token_count}")
+            
             response = await asyncio.to_thread(
                 self.gemini_model.generate_content,
                 prompt,

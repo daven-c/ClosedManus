@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from typing import Dict, Any, List
+import time
 from playwright.async_api import async_playwright, Page
 from bs4 import BeautifulSoup  # Import BeautifulSoup
 
@@ -119,7 +120,7 @@ class Browser:
             return {"success": False, "message": f"Error getting content: {e}"}
 
     async def get_page_details(self) -> Dict[str, Any]:
-        """Get current page details including URL, title, and condensed HTML content with interactables."""
+        """Get current page details including URL, title, condensed HTML content with interactables, and screenshot."""
         if not self.page or self.page.is_closed():
             return {"success": False, "message": "Browser not initialized or page closed"}
 
@@ -133,11 +134,32 @@ class Browser:
                     f"Networkidle wait timed out or failed: {wait_error}. Proceeding anyway.")
                 await asyncio.sleep(0.5)  # Fallback short sleep
 
+            # Capture screenshot first
+            screenshot_result = None
+            screenshot_path = f"screenshots/screenshot_{int(time.time())}.jpeg"
+            try:
+                screenshot_bytes = await self.page.screenshot(type="jpeg", quality=75, full_page=True)
+                
+                with open(screenshot_path, "wb") as f:
+                    f.write(screenshot_bytes)
+                
+                logger.info(f"Screenshot saved to {screenshot_path}")
+                screenshot_result = {
+                    "success": True,
+                    "screenshot": screenshot_path,
+                }
+            except Exception as screenshot_error:
+                logger.warning(f"Failed to capture screenshot: {screenshot_error}")
+                screenshot_result = {
+                    "success": False,
+                    "message": f"Screenshot capture failed: {str(screenshot_error)}"
+                }
+
             url = self.page.url
             title = await self.page.title()
             raw_html_content = await self.page.content()
             original_length = len(raw_html_content)
-            logger.debug(f"Raw HTML Length: {original_length}")
+            logger.info(f"Raw HTML Length: {original_length} divide by 4 for token count. Max token is 1,048,576")
 
             # --- HTML Condensation using BeautifulSoup ---
             soup = BeautifulSoup(raw_html_content, 'lxml')
@@ -186,7 +208,7 @@ class Browser:
 
             # Create the condensed representation string (JSON-like)
             # Limit the number of elements to prevent excessive length even after condensation
-            MAX_CONDENSED_ELEMENTS = 500
+            MAX_CONDENSED_ELEMENTS = 1000
             if len(condensed_elements) > MAX_CONDENSED_ELEMENTS:
                 logger.warning(
                     f"Condensed elements ({len(condensed_elements)}) exceed limit ({MAX_CONDENSED_ELEMENTS}), truncating.")
@@ -209,7 +231,9 @@ class Browser:
                 # Return the condensed representation instead of raw HTML
                 "condensed_content": condensed_content_str,
                 "original_html_length": original_length,  # Keep for info
-                "condensed_content_length": condensed_length  # Keep for info
+                "condensed_content_length": condensed_length,  # Keep for info
+                "screenshot": screenshot_result.get("screenshot") if screenshot_result and screenshot_result.get("success") else None,
+                "screenshot_error": screenshot_result.get("message") if screenshot_result and not screenshot_result.get("success") else None
             }
         except Exception as e:
             logger.error(f"Error getting page details: {e}", exc_info=True)
